@@ -2,8 +2,8 @@
 
 #include <jsi/jsi.h>
 #include <ReactCommon/CallInvoker.h>
-#include <react/nativemodule/core/ReactCommon/TurboModule.h>
-#include <react/nativemodule/core/ReactCommon/TurboModuleWithJSIBindings.h>
+#include <ReactCommon/TurboModule.h>
+#include <ReactCommon/TurboModuleWithJSIBindings.h>
 
 #include <memory>
 

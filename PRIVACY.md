@@ -10,4 +10,4 @@ ISOCUBE is a fully offline game. It does not collect, store, or transmit any per
 - **No permissions:** The app does not access your location, camera, contacts, or any device sensors.
 - **Children's privacy:** Because no data is collected, this app is suitable for all ages.
 
-If you have questions, contact: dev@neoncube.example
+If you have questions, contact: nikola.spicar@gmail.com

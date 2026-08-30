@@ -77,12 +77,11 @@ target_include_directories(tfm_engine PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/cpp"
 )
 
-# JSI / TurboModule headers (private to the glue TU).
-target_include_directories(tfm_engine PRIVATE
-  "${TFM_RN_COMMON_DIR}"
-  "${TFM_RN_COMMON_DIR}/callinvoker"
-  "${TFM_RN_COMMON_DIR}/jsi"
-)
+# JSI / TurboModule headers come from the ReactAndroid prefab (already on the
+# appmodules include path via ReactNative-application.cmake), so RN's own
+# headers and TfmEngine.h resolve to the SAME copies — no source ReactCommon
+# -I here, which avoids pulling in a duplicate TurboModule.h and causing
+# redefinition errors.
 
 # Engine sources: C++17, -fPIC, no fast-math.
 target_compile_options(tfm_engine PRIVATE -fPIC -O2 -fexceptions -frtti)
@@ -97,4 +96,13 @@ set_source_files_properties(
 # erf/exp/sqrt live in libm on glibc; harmless on Android/iOS.
 if(NOT ANDROID AND NOT APPLE)
   target_link_libraries(tfm_engine PUBLIC m)
+endif()
+
+# On Android the RN prefab aliases (defined by ReactNative-application.cmake
+# before this subdirectory is added) provide the canonical jsi / ReactCommon /
+# fbjni headers. Link PUBLIC so their include dirs reach both this target's
+# own TUs (TfmEngine.cpp) and the app's libappmodules (OnLoad.cpp) via the
+# SAME prefab copies — avoiding duplicate TurboModule.h redefinitions.
+if(ANDROID)
+  target_link_libraries(tfm_engine PUBLIC jsi reactnative fbjni)
 endif()

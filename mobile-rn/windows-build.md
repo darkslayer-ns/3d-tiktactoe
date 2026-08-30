@@ -40,3 +40,29 @@ Android toolchain needed. Windows reaches the WSL filesystem at
 - First sync downloads Gradle 9.3.1 + deps + NDK (~2–3 GB) and is slower over
   the `\\wsl.localhost` mount (9P). Copying the repo to Windows is the
   fallback if it's too slow.
+
+## APK build flow (`scripts/build_apk.sh`)
+
+The whole flow (build → sign → copy) is one command from WSL:
+
+```bash
+bash mobile-rn/scripts/build_apk.sh               # release arm64   → real phones
+bash mobile-rn/scripts/build_apk.sh --emulator    # release x86_64  → Android Studio emulator
+bash mobile-rn/scripts/build_apk.sh --debug       # debug all-ABI   → needs Metro
+OUT_DIR=/mnt/c/Users/nikol/Downloads bash mobile-rn/scripts/build_apk.sh --emulator
+```
+
+### Key facts to avoid the classic errors
+
+- **"Metro: unable to load script"** = you installed a **debug** APK without a
+  running Metro dev server. Debug APKs have no JS bundle. Either run
+  `npx expo start` + `adb reverse tcp:8081 tcp:8081`, or use a **release** APK
+  (bundle baked in, runs standalone).
+- **Architecture matters**: `arm64-v8a` (phone) **will not install** on an
+  x86_64 emulator (`INSTALL_FAILED_NO_MATCHING_ABIS`). Use the `--emulator`
+  variant for emulators.
+- **Signature mismatch**: debug and release APKs are signed with different keys.
+  Installing one over the other fails (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`) —
+  uninstall the old app first.
+- Release signing uses `mobile-rn/android/release.keystore` (password
+  `neoncube`). Keep it — it's the app's update identity.

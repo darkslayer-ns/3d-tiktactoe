@@ -60,7 +60,7 @@ function buildLookup(capture: CaptureEntry[]): Map<string, EvalResult> {
 
 describe('AI parity with the Python backend', () => {
   for (const c of cases) {
-    it(`n=${c.size} ${c.difficulty} -> move ${c.expectedMove}`, () => {
+    it(`n=${c.size} ${c.difficulty} -> move ${c.expectedMove}`, async () => {
       const lookup = buildLookup(c.capture)
       const engine = createMockEngine((cells, player, n) => {
         const key = JSON.stringify([cells, player, n])
@@ -82,7 +82,7 @@ describe('AI parity with the Python backend', () => {
       )
       const mover = new LookaheadMover(engine, board, pred, c.difficulty, scripted.rng)
 
-      const move = mover.chooseMove(c.ai as Cell)
+      const move = await mover.chooseMove(c.ai as Cell)
       expect(move).toBe(c.expectedMove)
       expect(scripted.remaining()).toBe(0)
     })

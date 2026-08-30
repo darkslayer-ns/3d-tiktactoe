@@ -1,11 +1,13 @@
 /**
- * Bottom sheet menu for Neon Cube: pick your side, difficulty and board size,
- * then Start. Slides up from the bottom over a dimmed backdrop.
+ * Home / menu sheet for ISOCUBE — matches the Stitch Home design:
+ * neon wordmark + logo, tagline, settings panel with cyan-active toggles,
+ * glowing outlined Start button.
  */
 
 import { useEffect, useRef, useState } from 'react'
 import {
   Animated,
+  Image,
   Modal,
   Pressable,
   StyleSheet,
@@ -58,8 +60,8 @@ function Segmented<T extends string | number>({
 }
 
 const SIDE_OPTIONS: Option<Cell>[] = [
-  { value: 1, label: 'X · first' },
-  { value: 2, label: 'O · second' },
+  { value: 1, label: 'X First' },
+  { value: 2, label: 'O Second' },
 ]
 
 const DIFFICULTY_OPTIONS: Option<Difficulty>[] = [
@@ -100,23 +102,35 @@ export function MenuSheet({ visible, onStart }: MenuSheetProps) {
           style={[styles.sheet, { transform: [{ translateY }] }]}
         >
           <View style={styles.handle} />
-          <Text style={styles.title}>Neon Cube</Text>
-          <Text style={styles.subtitle}>3D tic-tac-toe against the on-device model</Text>
 
-          <Text style={styles.sectionLabel}>You play</Text>
-          <Segmented options={SIDE_OPTIONS} value={humanSide} onChange={setHumanSide} />
+          <View style={styles.brand}>
+            <Image
+              source={require('../../../assets/isocube_logo.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+          </View>
 
-          <Text style={styles.sectionLabel}>Difficulty</Text>
-          <Segmented options={DIFFICULTY_OPTIONS} value={difficulty} onChange={setDifficulty} />
+          <View style={styles.panel}>
+            <Text style={styles.sectionLabel}>You play</Text>
+            <Segmented options={SIDE_OPTIONS} value={humanSide} onChange={setHumanSide} />
 
-          <Text style={styles.sectionLabel}>Board size</Text>
-          <Segmented options={SIZE_OPTIONS} value={size} onChange={setSize} />
+            <Text style={styles.sectionLabel}>Difficulty</Text>
+            <Segmented options={DIFFICULTY_OPTIONS} value={difficulty} onChange={setDifficulty} />
+
+            <Text style={styles.sectionLabel}>Board size</Text>
+            <Segmented options={SIZE_OPTIONS} value={size} onChange={setSize} />
+          </View>
 
           <Pressable
             onPress={() => onStart({ humanSide, difficulty, size })}
-            style={styles.startBtn}
+            style={({ pressed }) => [styles.startBtn, pressed && styles.startBtnPressed]}
           >
-            <Text style={styles.startBtnText}>Start game</Text>
+            {({ pressed }) => (
+              <Text style={[styles.startBtnText, pressed && styles.startBtnTextPressed]}>
+                Start Game
+              </Text>
+            )}
           </Pressable>
         </Animated.View>
       </View>
@@ -146,69 +160,87 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
     backgroundColor: Theme.border,
+    marginBottom: spacing(3),
+  },
+  brand: {
+    alignItems: 'center',
     marginBottom: spacing(4),
   },
-  title: {
-    color: Theme.cyan,
-    fontSize: fontSize(26),
-    fontWeight: '800',
-    letterSpacing: 2,
-    textAlign: 'center',
+  logo: {
+    width: 120,
+    height: 120,
   },
-  subtitle: {
-    color: Theme.muted,
-    fontSize: fontSize(13),
-    textAlign: 'center',
-    marginTop: spacing(1),
-    marginBottom: spacing(4),
+  panel: {
+    backgroundColor: Theme.panel,
+    borderRadius: radius(5),
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: spacing(4),
+    paddingVertical: spacing(3),
   },
   sectionLabel: {
     color: Theme.muted,
     fontSize: fontSize(11),
     fontWeight: '700',
     textTransform: 'uppercase',
-    letterSpacing: 1,
+    letterSpacing: 2,
     marginTop: spacing(3),
     marginBottom: spacing(1.5),
   },
   segmentRow: {
     flexDirection: 'row',
-    gap: spacing(1.5),
+    gap: spacing(1),
+    backgroundColor: Theme.bg,
+    borderRadius: radius(3),
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    padding: spacing(1),
   },
   segment: {
     flex: 1,
     paddingVertical: spacing(2.5),
-    paddingHorizontal: spacing(2),
     borderRadius: radius(2),
-    borderWidth: 1,
-    borderColor: Theme.border,
-    backgroundColor: 'rgba(15, 23, 42, 0.9)',
     alignItems: 'center',
   },
   segmentActive: {
-    borderColor: Theme.cyan,
-    backgroundColor: Theme.cyan,
+    backgroundColor: 'rgba(34, 211, 238, 0.18)',
+    shadowColor: Theme.cyan,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
   },
   segmentText: {
-    color: Theme.text,
+    color: Theme.muted,
     fontSize: fontSize(13),
     fontWeight: '600',
   },
   segmentTextActive: {
-    color: Theme.bg,
+    color: Theme.cyan,
     fontWeight: '800',
   },
   startBtn: {
-    marginTop: spacing(6),
-    paddingVertical: spacing(3),
-    borderRadius: radius(2),
-    backgroundColor: Theme.cyan,
+    marginTop: spacing(5),
+    paddingVertical: spacing(3.5),
+    borderRadius: radius(4),
+    borderWidth: 2,
+    borderColor: Theme.cyan,
     alignItems: 'center',
+    shadowColor: Theme.cyan,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+  },
+  startBtnPressed: {
+    backgroundColor: Theme.cyan,
   },
   startBtnText: {
-    color: Theme.bg,
+    color: Theme.cyan,
     fontSize: fontSize(16),
     fontWeight: '800',
-    letterSpacing: 1,
+    letterSpacing: 3,
+    textTransform: 'uppercase',
+  },
+  startBtnTextPressed: {
+    color: Theme.bg,
   },
 })

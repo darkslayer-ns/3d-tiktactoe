@@ -60,6 +60,8 @@ export interface GameState {
   over: boolean
   thinking: boolean
   movesPlayed: number[]
+  /** Index of the AI's most recent move, for a "just played" highlight. */
+  lastAiMove: number | null
 }
 
 export function emptyState(size: number, _humanSide: Cell): GameState {
@@ -72,5 +74,6 @@ export function emptyState(size: number, _humanSide: Cell): GameState {
     over: false,
     thinking: false,
     movesPlayed: [],
+    lastAiMove: null,
   }
 }

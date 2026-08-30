@@ -26,29 +26,29 @@ function legalEngine(value = 0.5): EvalEngine {
 }
 
 describe('LookaheadMover', () => {
-  it('takes an immediate win', () => {
+  it('takes an immediate win', async () => {
     const b = new Board(3)
     b.apply(b.idx(0, 0, 0), P1)
     b.apply(b.idx(1, 0, 0), P1)
     const engine = legalEngine()
     const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
-    expect(mover.chooseMove(P1)).toBe(b.idx(2, 0, 0))
+    expect(await mover.chooseMove(P1)).toBe(b.idx(2, 0, 0))
   })
 
-  it('blocks an immediate loss', () => {
+  it('blocks an immediate loss', async () => {
     const b = new Board(3)
     b.apply(b.idx(0, 0, 0), P2)
     b.apply(b.idx(1, 0, 0), P2)
     const engine = legalEngine()
     const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
-    expect(mover.chooseMove(P1)).toBe(b.idx(2, 0, 0))
+    expect(await mover.chooseMove(P1)).toBe(b.idx(2, 0, 0))
   })
 
-  it('returns a legal move on an empty board and records the search', () => {
+  it('returns a legal move on an empty board and records the search', async () => {
     const b = new Board(3)
     const engine = legalEngine()
     const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
-    const move = mover.chooseMove(P1)
+    const move = await mover.chooseMove(P1)
     expect(b.cells[move]).toBe(EMPTY)
     expect(mover.lastDecision?.kind).toBe('search')
     expect(mover.lastDecision?.player).toBe(P1)
@@ -57,7 +57,7 @@ describe('LookaheadMover', () => {
     expect(mover.lastDecision?.scored.length).toBeGreaterThan(0)
   })
 
-  it('caps the wrong-move budget on easy (one blunder, then a sane move)', () => {
+  it('caps the wrong-move budget on easy (one blunder, then a sane move)', async () => {
     const b = new Board(3)
     // No two cells of the same player are collinear -> no immediate win/block,
     // so the search runs and consumes the scripted draws exactly as expected.
@@ -79,23 +79,23 @@ describe('LookaheadMover', () => {
     ])
     const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'easy', rng)
 
-    const m1 = mover.chooseMove(P1)
+    const m1 = await mover.chooseMove(P1)
     expect(b.cells[m1]).toBe(EMPTY)
     expect(mover.lastDecision?.kind).toBe('blunder')
     b.apply(m1, P1)
 
-    const m2 = mover.chooseMove(P1)
+    const m2 = await mover.chooseMove(P1)
     expect(b.cells[m2]).toBe(EMPTY)
     expect(mover.lastDecision?.kind).toBe('search')
     expect(remaining()).toBe(0)
   })
 
-  it('returns -1 when the board is full', () => {
+  it('returns -1 when the board is full', async () => {
     const cells: Cell[] = []
     for (let i = 0; i < 27; i++) cells.push(((i % 2) + 1) as Cell)
     const b = new Board(3, cells)
     const engine = legalEngine()
     const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
-    expect(mover.chooseMove(P1)).toBe(-1)
+    expect(await mover.chooseMove(P1)).toBe(-1)
   })
 })

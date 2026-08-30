@@ -33,7 +33,7 @@
  *    which it maps to GLView `msaaSamples`.
  */
 
-import { useMemo, useRef, useCallback, type RefObject } from 'react'
+import { useMemo, useRef, useCallback, useEffect, type RefObject } from 'react'
 import { View, StyleSheet } from 'react-native'
 import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber/native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
@@ -44,13 +44,34 @@ import { cellCoord, type Cell, type Coord } from '../../game/types'
 /** Spread cells outward so inner cells of 4×4×4 / 5×5×5 are reachable. */
 const EXPLODE = 0.4
 
+/** Side length of each cell's box (same for every board size). */
+const SLOT_SIZE = 0.82 * (1 + EXPLODE) * 0.8
+/** Shared 12-edge outline (no face diagonals) for the empty-cell "glow border". */
+const slotEdgesGeometry = new THREE.EdgesGeometry(
+  new THREE.BoxGeometry(SLOT_SIZE, SLOT_SIZE, SLOT_SIZE),
+)
+
 /** Camera orbit limits (web OrbitControls used 3..14). */
 const MIN_DISTANCE = 4
-const MAX_DISTANCE = 14
+const MAX_DISTANCE = 40
 const MIN_PHI = 0.15
 const MAX_PHI = Math.PI - 0.15
 
 const INITIAL_CAMERA_POSITION: [number, number, number] = [5, 4.5, 5.5]
+
+/**
+ * Camera distance that fits the whole n×n×n cube (with the explode spread).
+ * On a portrait phone the horizontal FOV is the limiting dimension, so we fit
+ * the cube's bounding sphere to it (vertical FOV = 45°, aspect ≈ 0.5).
+ */
+function fitDistance(size: number): number {
+  const halfExtent = (size * (1 + EXPLODE)) / 2
+  const circumRadius = halfExtent * Math.sqrt(3)
+  const vHalf = (45 * Math.PI) / 360
+  const hHalf = Math.atan(Math.tan(vHalf) * 0.5)
+  const d = circumRadius / Math.tan(hHalf)
+  return clamp(d * 1.05, MIN_DISTANCE, MAX_DISTANCE)
+}
 
 /** Spherical target the camera eases toward (theta/phi around cube center). */
 export interface OrbitTarget {
@@ -65,6 +86,9 @@ export interface Board3DProps {
   onCellClick: (index: number) => void
   pendingIndex: number | null
   winningLine: Coord[] | null
+  lastAiMove: number | null
+  /** true while the opponent is computing — drives the cube's pulse animation */
+  thinking: boolean
   /** true when the cell may be selected by the player right now */
   interactive: (index: number) => boolean
 }
@@ -93,12 +117,12 @@ function cellPosition(index: number, size: number, expl: number): [number, numbe
   return [(x - off) * k, (off - y) * k, (z - off) * k]
 }
 
-/** Current spherical of the initial camera position — the default orbit. */
-function defaultOrbitTarget(): OrbitTarget {
+/** Current spherical of the initial camera angle, fit to `size`. */
+function defaultOrbitTarget(size: number): OrbitTarget {
   const s = new THREE.Spherical().setFromVector3(
     new THREE.Vector3(...INITIAL_CAMERA_POSITION),
   )
-  return { theta: s.theta, phi: s.phi, distance: s.radius }
+  return { theta: s.theta, phi: s.phi, distance: fitDistance(size) }
 }
 
 interface MarkProps {
@@ -171,49 +195,47 @@ interface SlotProps {
   interactive: boolean
   dim: boolean
   pulse: boolean
+  thinking: boolean
   onPointerDown: (e: ThreeEvent<PointerEvent>) => void
   onClick: (e: ThreeEvent<MouseEvent>, index: number) => void
 }
 
-function AnimatedSlot({ index, position, interactive, dim, pulse, onPointerDown, onClick }: SlotProps) {
-  const spacing = 0.82 * (1 + EXPLODE)
-  const slot = spacing * 0.94
-  const matRef = useRef<THREE.MeshStandardMaterial>(null)
+function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPointerDown, onClick }: SlotProps) {
+  const edgeMat = useRef<THREE.LineBasicMaterial>(null)
 
   useFrame((state) => {
-    const mat = matRef.current
-    if (!mat) return
-    const target = dim ? 0.05 : 0.28
-    mat.opacity += (target - mat.opacity) * 0.12
+    const e = edgeMat.current
+    if (!e) return
+    const t = state.clock.elapsedTime
     if (pulse) {
-      mat.emissive.set('#22d3ee')
-      mat.emissiveIntensity = 0.7 + 0.6 * Math.sin(state.clock.elapsedTime * 6)
-      mat.color.set('#164e63')
+      e.color.set('#22d3ee')
+      e.opacity = 0.75 + 0.25 * Math.sin(t * 6)
+    } else if (thinking) {
+      // Opponent computing: the cyan borders breathe (no text UI).
+      e.color.set('#22d3ee')
+      e.opacity = 0.4 + 0.3 * (0.5 + 0.5 * Math.sin(t * 4))
     } else {
-      mat.emissiveIntensity = 0
-      mat.color.set('#0f172a')
+      e.color.set(dim ? '#155e75' : '#22d3ee')
+      e.opacity = dim ? 0.35 : 0.7
     }
   })
 
   return (
-    <mesh
-      position={position}
-      {...(interactive ? {} : { raycast: () => null })}
-      onPointerDown={onPointerDown}
-      onClick={(e) => onClick(e, index)}
-    >
-      <boxGeometry args={[slot, slot, slot]} />
-      <meshStandardMaterial
-        ref={matRef}
-        color="#0f172a"
-        emissive="#22d3ee"
-        emissiveIntensity={0}
-        transparent
-        opacity={0.28}
-        roughness={0.6}
-        metalness={0.3}
-      />
-    </mesh>
+    <group position={position}>
+      {/* invisible hit target (transparent faces would show triangle seams) */}
+      <mesh
+        {...(interactive ? {} : { raycast: () => null })}
+        onPointerDown={onPointerDown}
+        onClick={(e) => onClick(e, index)}
+      >
+        <boxGeometry args={[SLOT_SIZE, SLOT_SIZE, SLOT_SIZE]} />
+        <meshStandardMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+      {/* glowing cyan border */}
+      <lineSegments geometry={slotEdgesGeometry} raycast={() => null}>
+        <lineBasicMaterial ref={edgeMat} color="#22d3ee" transparent opacity={0.7} />
+      </lineSegments>
+    </group>
   )
 }
 
@@ -228,8 +250,11 @@ function WinBeam({ line, size }: { line: Coord[]; size: number }) {
     const mid = p1.clone().add(p2).multiplyScalar(0.5)
     const len = p1.distanceTo(p2)
     const dir = p2.clone().sub(p1).normalize()
-    const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
-    return { mid: mid.toArray() as [number, number, number], len, quat }
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+    // Pass quaternion as a plain [x, y, z, w] tuple: R3F mutates the object's
+    // quaternion via fromArray(), whereas passing a THREE.Quaternion instance
+    // makes R3F try to assign the read-only property and crash.
+    return { mid: mid.toArray() as [number, number, number], len, quat: [q.x, q.y, q.z, q.w] as [number, number, number, number] }
   }, [line, off, k])
   return (
     <group position={mid}>
@@ -257,6 +282,28 @@ function PendingHighlight({ position }: { position: [number, number, number] }) 
   )
 }
 
+function LastAiMoveHighlight({ position }: { position: [number, number, number] }) {
+  const mat = useRef<THREE.MeshBasicMaterial>(null)
+  const s = 0.62 * (1 + EXPLODE)
+  useFrame((state) => {
+    const m = mat.current
+    if (!m) return
+    m.opacity = 0.2 + 0.15 * Math.sin(state.clock.elapsedTime * 6)
+  })
+  return (
+    <mesh raycast={() => null} position={position}>
+      <boxGeometry args={[s, s, s]} />
+      <meshBasicMaterial
+        ref={mat}
+        color="#ffffff"
+        transparent
+        opacity={0.4}
+        depthWrite={false}
+      />
+    </mesh>
+  )
+}
+
 /**
  * Eases the camera along a spherical orbit toward `target` (fed by the
  * pan/pinch gestures). Runs inside the R3F frame loop.
@@ -266,12 +313,16 @@ function OrbitRig({ target }: { target: RefObject<OrbitTarget> }) {
 
   useFrame((state, dt) => {
     const cam = state.camera
+    const t = target.current
     if (!spherical.current) {
-      spherical.current = new THREE.Spherical().setFromVector3(cam.position)
+      // Start at the fitted orbit so there's no initial zoom/settle motion.
+      spherical.current = new THREE.Spherical(t.distance, t.phi, t.theta)
+      cam.position.setFromSphericalCoords(t.distance, t.phi, t.theta)
+      cam.lookAt(0, 0, 0)
+      return
     }
     const cur = spherical.current
-    const t = target.current
-    const damp = 1 - Math.exp(-dt * 6)
+    const damp = 1 - Math.exp(-dt * 8)
     cur.theta += (t.theta - cur.theta) * damp
     cur.phi += (t.phi - cur.phi) * damp
     cur.radius += (t.distance - cur.radius) * damp
@@ -287,6 +338,8 @@ interface BoardMeshProps {
   cells: Cell[]
   pendingIndex: number | null
   winningLine: Coord[] | null
+  lastAiMove: number | null
+  thinking: boolean
   interactive: (index: number) => boolean
   onPointerDown: (e: ThreeEvent<PointerEvent>) => void
   handleClick: (e: ThreeEvent<MouseEvent>, index: number) => void
@@ -297,6 +350,8 @@ function BoardMesh({
   cells,
   pendingIndex,
   winningLine,
+  lastAiMove,
+  thinking,
   interactive,
   onPointerDown,
   handleClick,
@@ -312,12 +367,6 @@ function BoardMesh({
 
   return (
     <group>
-      {/* outer wireframe shell — never blocks clicks */}
-      <mesh raycast={() => null}>
-        <boxGeometry args={[size * (1 + EXPLODE), size * (1 + EXPLODE), size * (1 + EXPLODE)]} />
-        <meshBasicMaterial color="#1e293b" wireframe transparent opacity={0.35} />
-      </mesh>
-
       {slots.map(({ index, pos }) => {
         const value = cells[index]
         const onAxis = axisSet.has(index)
@@ -344,6 +393,7 @@ function BoardMesh({
             interactive={interactive(index)}
             dim={dim}
             pulse={onAxis}
+            thinking={thinking}
             onPointerDown={onPointerDown}
             onClick={handleClick}
           />
@@ -357,6 +407,12 @@ function BoardMesh({
           <PendingHighlight position={cellPosition(pendingIndex, size, EXPLODE)} />
         )}
 
+      {lastAiMove != null &&
+        lastAiMove >= 0 &&
+        lastAiMove < size ** 3 && (
+          <LastAiMoveHighlight position={cellPosition(lastAiMove, size, EXPLODE)} />
+        )}
+
       {winningLine && winningLine.length >= 2 && <WinBeam line={winningLine} size={size} />}
     </group>
   )
@@ -368,14 +424,20 @@ export function Board3D({
   onCellClick,
   pendingIndex,
   winningLine,
+  lastAiMove,
+  thinking,
   interactive,
 }: Board3DProps) {
-  // Spherical orbit target, written by the gestures, read by OrbitRig.
-  const target = useRef<OrbitTarget>(defaultOrbitTarget())
+  // Spherical orbit target, written by the pan gesture, read by OrbitRig.
+  const target = useRef<OrbitTarget>(defaultOrbitTarget(size))
   const panStart = useRef<{ theta: number; phi: number }>({ theta: 0, phi: 0 })
-  const pinchStartDist = useRef(0)
   // Pointer-down position for the manual 10px click threshold (web parity).
   const downRef = useRef<{ x: number; y: number } | null>(null)
+
+  // Refit the whole cube when the board size changes.
+  useEffect(() => {
+    target.current.distance = fitDistance(size)
+  }, [size])
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation()
@@ -404,29 +466,12 @@ export function Board3D({
         .onUpdate((e) => {
           const t = target.current
           t.theta = panStart.current.theta - e.translationX * 0.008
-          t.phi = clamp(panStart.current.phi + e.translationY * 0.008, MIN_PHI, MAX_PHI)
+          t.phi = clamp(panStart.current.phi - e.translationY * 0.008, MIN_PHI, MAX_PHI)
         }),
     [],
   )
 
-  const pinch = useMemo(
-    () =>
-      Gesture.Pinch()
-        .onStart(() => {
-          pinchStartDist.current = target.current.distance
-        })
-        .onUpdate((e) => {
-          if (e.scale <= 0.01) return
-          target.current.distance = clamp(
-            pinchStartDist.current / e.scale,
-            MIN_DISTANCE,
-            MAX_DISTANCE,
-          )
-        }),
-    [],
-  )
-
-  const composed = useMemo(() => Gesture.Simultaneous(pan, pinch), [pan, pinch])
+  const composed = useMemo(() => pan, [pan])
 
   return (
     <GestureDetector gesture={composed}>
@@ -444,6 +489,8 @@ export function Board3D({
             cells={cells}
             pendingIndex={pendingIndex}
             winningLine={winningLine}
+            lastAiMove={lastAiMove}
+            thinking={thinking}
             interactive={interactive}
             onPointerDown={handlePointerDown}
             handleClick={handleClick}

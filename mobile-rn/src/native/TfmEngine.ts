@@ -35,6 +35,10 @@ function resolveNative(): TfmEngineNative | null {
   try {
     if (typeof g.__turboModuleProxy === 'function') {
       g.__turboModuleProxy('TfmEngine')
+    } else if (g.nativeModuleProxy != null) {
+      // Bridgeless mode: reading the property instantiates the module and runs
+      // its installJSIBindingsWithRuntime, which sets globalThis.__TfmEngine.
+      g.nativeModuleProxy.TfmEngine
     }
   } catch {
     // The module may still be present below; otherwise we're on jest/web.

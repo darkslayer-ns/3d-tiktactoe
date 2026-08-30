@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "Neon Cube",
+    "slug": "ttt-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#020617",
+    "plugins": [
+      "./plugins/withTfmEngine"
+    ],
+    "android": {
+      "package": "com.neoncube.ttt"
+    },
+    "ios": {
+      "bundleIdentifier": "com.neoncube.ttt",
+      "supportsTablet": true
+    }
+  }
+}

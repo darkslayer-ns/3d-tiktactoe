@@ -208,15 +208,15 @@ function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPo
     if (!e) return
     const t = state.clock.elapsedTime
     if (pulse) {
-      e.color.set('#22d3ee')
-      e.opacity = 0.75 + 0.25 * Math.sin(t * 6)
+      e.color.set('#0ea5e9')
+      e.opacity = 0.5 + 0.2 * Math.sin(t * 6)
     } else if (thinking) {
-      // Opponent computing: the cyan borders breathe (no text UI).
-      e.color.set('#22d3ee')
-      e.opacity = 0.4 + 0.3 * (0.5 + 0.5 * Math.sin(t * 4))
+      // Opponent computing: the borders breathe (no text UI).
+      e.color.set('#0ea5e9')
+      e.opacity = 0.28 + 0.2 * (0.5 + 0.5 * Math.sin(t * 4))
     } else {
-      e.color.set(dim ? '#155e75' : '#22d3ee')
-      e.opacity = dim ? 0.35 : 0.7
+      e.color.set(dim ? '#0c4a6e' : '#0ea5e9')
+      e.opacity = dim ? 0.2 : 0.45
     }
   })
 
@@ -233,7 +233,7 @@ function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPo
       </mesh>
       {/* glowing cyan border */}
       <lineSegments geometry={slotEdgesGeometry} raycast={() => null}>
-        <lineBasicMaterial ref={edgeMat} color="#22d3ee" transparent opacity={0.7} />
+        <lineBasicMaterial ref={edgeMat} color="#0ea5e9" transparent opacity={0.45} />
       </lineSegments>
     </group>
   )

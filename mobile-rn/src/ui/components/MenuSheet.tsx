@@ -167,8 +167,8 @@ const styles = StyleSheet.create({
     marginBottom: spacing(4),
   },
   logo: {
-    width: 120,
-    height: 120,
+    width: 280,
+    height: 108,
   },
   panel: {
     backgroundColor: Theme.panel,

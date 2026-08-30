@@ -216,15 +216,6 @@ export function GameScreen() {
 
   return (
     <View style={styles.root}>
-      <View style={styles.topBar}>
-        <View style={styles.brandRow}>
-          <Text style={styles.brandText}>ISOCUBE</Text>
-        </View>
-        <Pressable onPress={openMenu} style={styles.menuBtn} hitSlop={8}>
-          <Text style={styles.menuBtnText}>Menu</Text>
-        </Pressable>
-      </View>
-
       <View style={styles.boardArea}>
         <Board3D
           size={snap.size}
@@ -246,6 +237,10 @@ export function GameScreen() {
 
       <View style={styles.bottom}>
         <StatusBar state={snap} humanSide={config.humanSide} onPlayAgain={playAgain} />
+
+        <Pressable onPress={openMenu} style={styles.newGameBtn}>
+          <Text style={styles.newGameBtnText}>New game</Text>
+        </Pressable>
       </View>
 
       {pending != null && isHumanTurn && (
@@ -268,40 +263,6 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: Theme.bg,
-  },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing(4),
-    paddingVertical: spacing(3),
-    borderBottomWidth: 1,
-    borderBottomColor: Theme.border,
-    backgroundColor: 'rgba(2, 6, 23, 0.8)',
-  },
-  brandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing(2),
-  },
-  brandText: {
-    color: Theme.cyan,
-    fontSize: fontSize(15),
-    fontWeight: '800',
-    letterSpacing: 2,
-  },
-  menuBtn: {
-    paddingVertical: spacing(1.5),
-    paddingHorizontal: spacing(3),
-    borderRadius: radius(2),
-    borderWidth: 1,
-    borderColor: Theme.border,
-    backgroundColor: 'rgba(15, 23, 42, 0.9)',
-  },
-  menuBtnText: {
-    color: Theme.text,
-    fontSize: fontSize(13),
-    fontWeight: '600',
   },
   boardArea: {
     flex: 1,
@@ -330,6 +291,23 @@ const styles = StyleSheet.create({
   bottom: {
     borderTopWidth: 1,
     borderTopColor: Theme.border,
+  },
+  newGameBtn: {
+    marginHorizontal: spacing(4),
+    marginBottom: spacing(3),
+    paddingVertical: spacing(2.5),
+    borderRadius: radius(3),
+    borderWidth: 1,
+    borderColor: Theme.border,
+    alignItems: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.7)',
+  },
+  newGameBtnText: {
+    color: Theme.cyan,
+    fontSize: fontSize(13),
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
   },
   actionBar: {
     position: 'absolute',

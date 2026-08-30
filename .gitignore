@@ -1,0 +1,43 @@
+# deps / build
+node_modules/
+**/node_modules/
+dist/
+build/
+.expo/
+.gradle/
+cpp/build/
+cpp/fixtures/
+
+# generated native projects (regenerate via `expo prebuild`)
+mobile-rn/android/
+mobile-rn/ios/
+mobile/ios/
+mobile/android/
+
+# runtime data
+.cache/
+.logs/
+data/
+.playwright-mcp/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# logs / os
+*.log
+.DS_Store
+
+# stray / legacy artifacts
+a
+*.png
+ml_checkpoint.pt
+model_3_base.onnx
+model_universal/
+ŠNAPS_PROJECT.md
+
+# compiled build artifacts
+backend/distill/distill
+backend/distill/libsolver.so
+mobile/assets/

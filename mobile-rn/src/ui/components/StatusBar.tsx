@@ -3,8 +3,8 @@
  * or the win/draw result with a "Play again" button.
  */
 
-import { useEffect, useState } from 'react'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { useEffect, useRef } from 'react'
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native'
 import { Theme, fontSize, radius, spacing } from '../theme'
 import type { GameState } from '../../ai/types'
 import { EMPTY, P1, type Cell } from '../../game/types'
@@ -20,13 +20,19 @@ function markOf(player: Cell): string {
 }
 
 export function StatusBar({ state, humanSide, onPlayAgain }: StatusBarProps) {
-  const [dots, setDots] = useState(0)
+  const opacity = useRef(new Animated.Value(1)).current
 
   useEffect(() => {
     if (!state.thinking) return
-    const id = setInterval(() => setDots((d) => (d + 1) % 4), 380)
-    return () => clearInterval(id)
-  }, [state.thinking])
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0.25, duration: 320, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 1, duration: 320, useNativeDriver: true }),
+      ]),
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [state.thinking, opacity])
 
   if (state.over) {
     const result =
@@ -34,7 +40,7 @@ export function StatusBar({ state, humanSide, onPlayAgain }: StatusBarProps) {
         ? 'Draw'
         : state.winner === humanSide
           ? 'You win!'
-          : 'AI wins'
+          : 'ISOCUBE wins'
     const accent = state.winner === EMPTY ? Theme.muted : Theme.cyan
     return (
       <View style={styles.bar}>
@@ -50,11 +56,10 @@ export function StatusBar({ state, humanSide, onPlayAgain }: StatusBarProps) {
   if (state.thinking) {
     return (
       <View style={styles.bar}>
-        <View style={styles.spinner} />
-        <Text style={styles.text}>
-          AI thinking{'.'.repeat(dots)}
-          <Text style={styles.dim}>{'.'.repeat(3 - dots)}</Text>
-        </Text>
+        <Animated.View
+          style={[styles.dot, { backgroundColor: Theme.pink, shadowColor: Theme.pink, opacity }]}
+        />
+        <Text style={[styles.text, { color: Theme.pink }]}>Opponent's turn</Text>
       </View>
     )
   }
@@ -77,9 +82,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing(2),
-    minHeight: spacing(9),
+    height: spacing(13),
     paddingHorizontal: spacing(4),
-    paddingVertical: spacing(2),
     backgroundColor: 'rgba(2, 6, 23, 0.85)',
     borderTopWidth: 1,
     borderTopColor: Theme.border,
@@ -97,17 +101,6 @@ const styles = StyleSheet.create({
     fontSize: fontSize(14),
     fontWeight: '700',
     letterSpacing: 0.5,
-  },
-  dim: {
-    opacity: 0.25,
-  },
-  spinner: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    borderWidth: 2,
-    borderColor: 'rgba(34, 211, 238, 0.25)',
-    borderTopColor: Theme.cyan,
   },
   playAgain: {
     marginLeft: 'auto',

@@ -71,14 +71,15 @@ export function GameScreen() {
     thinkingRef.current = true
     setSnap((prev) => ({ ...prev, thinking: true }))
     if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => {
+    timerRef.current = setTimeout(async () => {
       const board = boardRef.current
       const mover = moverRef.current
       const predictor = predictorRef.current
       if (!board || !mover || !predictor) return
       if (overRef.current) return
       try {
-        const move = mover.chooseMove(aiSide)
+        const move = await mover.chooseMove(aiSide)
+        if (overRef.current) return
         board.apply(move, aiSide)
         predictor.record(aiSide, move)
         movesRef.current.push(move)
@@ -94,6 +95,7 @@ export function GameScreen() {
           over: outcome.over,
           thinking: false,
           movesPlayed: movesRef.current.slice(),
+          lastAiMove: move,
         }))
         setPending(null)
       } catch {
@@ -187,6 +189,7 @@ export function GameScreen() {
         over: true,
         thinking: false,
         movesPlayed: movesRef.current.slice(),
+        lastAiMove: null,
       }))
       return
     }
@@ -195,6 +198,7 @@ export function GameScreen() {
       cells: board.cells.slice(),
       currentPlayer: human === P1 ? P2 : P1,
       movesPlayed: movesRef.current.slice(),
+      lastAiMove: null,
     }))
     runAITurn()
   }, [pending, snap.currentPlayer, runAITurn])
@@ -214,8 +218,7 @@ export function GameScreen() {
     <View style={styles.root}>
       <View style={styles.topBar}>
         <View style={styles.brandRow}>
-          <View style={styles.brandDot} />
-          <Text style={styles.brandText}>NEON CUBE</Text>
+          <Text style={styles.brandText}>ISOCUBE</Text>
         </View>
         <Pressable onPress={openMenu} style={styles.menuBtn} hitSlop={8}>
           <Text style={styles.menuBtnText}>Menu</Text>
@@ -229,14 +232,10 @@ export function GameScreen() {
           onCellClick={clickCell}
           pendingIndex={pending}
           winningLine={snap.winningLine}
+          lastAiMove={snap.lastAiMove}
+          thinking={snap.thinking}
           interactive={interactive}
         />
-
-        {isHumanTurn && pending == null && (
-          <View style={styles.hint} pointerEvents="none">
-            <Text style={styles.hintText}>Tap a cell · drag to rotate · pinch to zoom</Text>
-          </View>
-        )}
 
         {engineError != null && (
           <View style={styles.engineError} pointerEvents="none">
@@ -247,18 +246,18 @@ export function GameScreen() {
 
       <View style={styles.bottom}>
         <StatusBar state={snap} humanSide={config.humanSide} onPlayAgain={playAgain} />
-
-        {pending != null && isHumanTurn && (
-          <View style={styles.actionBar}>
-            <Pressable onPress={placeMove} style={styles.placeBtn}>
-              <Text style={styles.placeBtnText}>Place {humanMark}</Text>
-            </Pressable>
-            <Pressable onPress={cancelPending} style={styles.cancelBtn}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
-            </Pressable>
-          </View>
-        )}
       </View>
+
+      {pending != null && isHumanTurn && (
+        <View style={styles.actionBar}>
+          <Pressable onPress={placeMove} style={styles.placeBtn}>
+            <Text style={styles.placeBtnText}>Place {humanMark}</Text>
+          </Pressable>
+          <Pressable onPress={cancelPending} style={styles.cancelBtn}>
+            <Text style={styles.cancelBtnText}>Cancel</Text>
+          </Pressable>
+        </View>
+      )}
 
       <MenuSheet visible={menuVisible} onStart={handleStart} />
     </View>
@@ -285,16 +284,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing(2),
   },
-  brandDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: Theme.cyan,
-    shadowColor: Theme.cyan,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 6,
-  },
   brandText: {
     color: Theme.cyan,
     fontSize: fontSize(15),
@@ -320,23 +309,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: Theme.bg,
   },
-  hint: {
-    position: 'absolute',
-    bottom: spacing(4),
-    alignSelf: 'center',
-    paddingVertical: spacing(2),
-    paddingHorizontal: spacing(4),
-    borderRadius: radius(10),
-    borderWidth: 1,
-    borderColor: Theme.cyan,
-    backgroundColor: 'rgba(2, 6, 23, 0.85)',
-  },
-  hintText: {
-    color: Theme.cyan,
-    fontSize: fontSize(12),
-    fontWeight: '600',
-    letterSpacing: 0.5,
-  },
   engineError: {
     position: 'absolute',
     top: spacing(4),
@@ -360,11 +332,18 @@ const styles = StyleSheet.create({
     borderTopColor: Theme.border,
   },
   actionBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: spacing(10),
     flexDirection: 'row',
     gap: spacing(3),
     paddingHorizontal: spacing(4),
     paddingVertical: spacing(3),
     backgroundColor: 'rgba(2, 6, 23, 0.85)',
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: Theme.border,
   },
   placeBtn: {
     flex: 1,

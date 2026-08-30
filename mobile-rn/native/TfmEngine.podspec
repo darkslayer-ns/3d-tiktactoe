@@ -28,10 +28,10 @@ Pod::Spec.new do |s|
     "cpp/*.cpp",
     "cpp/*.h",
     "include/*.hpp",
-    "../cpp/src/*.cpp",
-    "../cpp/include/tfm/*.hpp",
+    "../../cpp/src/*.cpp",
+    "../../cpp/include/tfm/*.hpp",
   ]
-  s.header_mappings_dir = "../cpp/include"  # keep `tfm/model.hpp` importable
+  s.header_mappings_dir = "../../cpp/include"  # keep `tfm/model.hpp` importable
 
   # --- Dependencies ----------------------------------------------------------
   s.dependency "React-Core"
@@ -49,9 +49,10 @@ Pod::Spec.new do |s|
       '"$(PODS_ROOT)/Headers/Public/jsi" ' \
       '"$(PODS_ROOT)/Headers/Private/React-Core" ' \
       '"$(PODS_TARGET_SRCROOT)/.." ' \
-      '"$(PODS_TARGET_SRCROOT)/../cpp/include" ' \
+      '"$(PODS_TARGET_SRCROOT)/../../cpp/include" ' \
       '"$(PODS_TARGET_SRCROOT)/include" ' \
-      '"$(PODS_TARGET_SRCROOT)/cpp"',
+      '"$(PODS_TARGET_SRCROOT)/cpp" ' \
+      '"$(PODS_TARGET_SRCROOT)/../node_modules/react-native/ReactCommon"',
     "CLANG_CXX_LANGUAGE_STANDARD" => "c++20",
     "CLANG_CXX_LIBRARY" => "libc++",
     "USE_HEADERMAP" => "NO",

@@ -165,6 +165,20 @@ export class LookaheadMover {
   private _nodes = 0
   private _wrongMovesUsed = 0
   private _lastScored: Array<[number, number]> | null = null
+  private _yieldT = 0
+
+  /**
+   * Cooperatively yield control back to the JS thread every ~16ms so the AI
+   * search never freezes animations or gesture handling. No-op when the last
+   * yield was recent; the search result is unaffected.
+   */
+  private async _maybeYield(): Promise<void> {
+    const now = Date.now()
+    if (now - this._yieldT > 16) {
+      this._yieldT = now
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+  }
 
   constructor(
     model: EvalEngine | null,
@@ -233,7 +247,7 @@ export class LookaheadMover {
    * Expected value (for AI) after the opponent's likely replies. Operates on
    * a board COPY — the live game board is never mutated.
    */
-  private _opponentExpected(board: Board, ai: Cell, depth: number, topK?: number): number {
+  private async _opponentExpected(board: Board, ai: Cell, depth: number, topK?: number): Promise<number> {
     if (topK === undefined) topK = this.topK
     this._nodes += 1
     if (this._nodes > this.maxNodes) {
@@ -251,6 +265,7 @@ export class LookaheadMover {
     let exp = 0.0
     const nextTopK = Math.max(1, topK - 1)
     for (const [r, pr] of dist) {
+      await this._maybeYield()
       const w = pr / total
       board.apply(r, opp)
       const t = this._terminal(board, ai)
@@ -260,7 +275,7 @@ export class LookaheadMover {
       } else if (depth > 1) {
         const a = this._evaluate(board, ai)[1]
         board.apply(a, ai)
-        rv = this._opponentExpected(board, ai, depth - 1, nextTopK)
+        rv = await this._opponentExpected(board, ai, depth - 1, nextTopK)
         board.cells[a] = EMPTY
       } else {
         rv = this._evaluate(board, ai)[0]
@@ -272,7 +287,7 @@ export class LookaheadMover {
   }
 
   /** Expected value of AI playing m on `board`, searching `depth` plies. */
-  private _evalMove(board: Board, m: number, ai: Cell, depth?: number): number {
+  private async _evalMove(board: Board, m: number, ai: Cell, depth?: number): Promise<number> {
     if (depth === undefined) depth = this.depth
     this._nodes += 1
     if (this._nodes > this.maxNodes) {
@@ -293,7 +308,7 @@ export class LookaheadMover {
       board.cells[m] = EMPTY
       return v
     }
-    const v = this._opponentExpected(board, ai, depth)
+    const v = await this._opponentExpected(board, ai, depth)
     board.cells[m] = EMPTY
     return v
   }
@@ -325,7 +340,7 @@ export class LookaheadMover {
   }
 
   /** Equivalent of Python `__call__`: pick the AI's move for `ai`. */
-  chooseMove(ai: Cell): number {
+  async chooseMove(ai: Cell): Promise<number> {
     const moves = this.board.moves()
     if (moves.length === 0) return -1
 
@@ -336,7 +351,7 @@ export class LookaheadMover {
       return final
     }
 
-    const best = this._strongMove(ai, moves)
+    const best = await this._strongMove(ai, moves)
     const scored = this._lastScored
 
     // deliberate wrong moves: blunder at most `wrong_move_budget` times per
@@ -418,7 +433,7 @@ export class LookaheadMover {
    * The intended strong move: immediate win, block, or search pick. All
    * search happens on a COPY of the board so the live board is never mutated.
    */
-  private _strongMove(ai: Cell, moves: number[]): number {
+  private async _strongMove(ai: Cell, moves: number[]): Promise<number> {
     const search = new Board(this.board.n, this.board.cells)
     const opp: Cell = ai === P1 ? P2 : P1
     this._nodes = 0
@@ -440,7 +455,7 @@ export class LookaheadMover {
       if (w === opp) return m
     }
 
-    const scored = this._scored(ai, moves, search).sort((a, b) => b[1] - a[1])
+    const scored = (await this._scored(ai, moves, search)).sort((a, b) => b[1] - a[1])
     this._lastScored = scored
 
     // opening-phase temperature: sample among good moves so the AI does not
@@ -483,10 +498,11 @@ export class LookaheadMover {
   }
 
   /** (move, expected-value) list from the lookahead search. */
-  private _scored(ai: Cell, moves: number[], search: Board): Array<[number, number]> {
+  private async _scored(ai: Cell, moves: number[], search: Board): Promise<Array<[number, number]>> {
     const out: Array<[number, number]> = []
     for (const m of moves) {
-      out.push([m, this._evalMove(search, m, ai)])
+      await this._maybeYield()
+      out.push([m, await this._evalMove(search, m, ai)])
     }
     return out
   }

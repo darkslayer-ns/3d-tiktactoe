@@ -149,7 +149,8 @@ describe('state / moves', () => {
   })
 
   it('rejects unsupported sizes', () => {
-    expect(() => new Board(6)).toThrow(/unsupported board size/)
+    expect(() => new Board(2)).toThrow(/unsupported board size/)
+    expect(() => new Board(7)).toThrow(/unsupported board size/)
   })
 
   it('coordOfLine maps coords to indices', () => {

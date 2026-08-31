@@ -4,7 +4,7 @@
  * glowing outlined Start button.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Animated,
   Image,
@@ -23,6 +23,7 @@ export type { GameConfig }
 interface MenuSheetProps {
   visible: boolean
   onStart: (config: GameConfig) => void
+  onHowTo?: (config: GameConfig) => void
 }
 
 interface Option<T> {
@@ -70,13 +71,93 @@ const DIFFICULTY_OPTIONS: Option<Difficulty>[] = [
   { value: 'hard', label: 'Hard' },
 ]
 
-const SIZE_OPTIONS: Option<number>[] = [
-  { value: 3, label: '3×3×3' },
-  { value: 4, label: '4×4×4' },
-  { value: 5, label: '5×5×5' },
-]
+const MIN_SIZE = 3
+const MAX_SIZE = 6
 
-export function MenuSheet({ visible, onStart }: MenuSheetProps) {
+const THUMB = 24
+const TRACK_H = 6
+
+/** Minimal track-and-thumb slider. Uses absolute `pageX` + a measured window
+ * origin (NOT child-relative locationX), a native-driven Animated.Value for
+ * the thumb/fill, and emits onChange only when the snapped size actually
+ * changes — so a drag never re-renders React and tracks the finger at 60fps. */
+function SizeSlider({
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  value: number
+  min: number
+  max: number
+  onChange: (v: number) => void
+}) {
+  const touchRef = useRef<View>(null)
+  const trackWRef = useRef(1)
+  const originXRef = useRef(0)
+  const lastEmittedRef = useRef(value)
+  const pos = useRef(new Animated.Value(0, { useNativeDriver: true })).current // native-driven
+  const [trackW, setTrackW] = useState(1)
+
+  const fillScale = useMemo(
+    () =>
+      pos.interpolate({
+        inputRange: [0, Math.max(1, trackW - THUMB)],
+        outputRange: [0, 1],
+        extrapolate: 'clamp',
+      }),
+    [pos, trackW],
+  )
+
+  const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
+
+  const setFromPageX = (pageX: number) => {
+    const span = Math.max(1, trackWRef.current - THUMB)
+    const tt = clamp01((pageX - originXRef.current - THUMB / 2) / span)
+    pos.setValue(tt * span)
+    const next = min + Math.round(tt * (max - min))
+    if (next !== lastEmittedRef.current) {
+      lastEmittedRef.current = next
+      onChange(next)
+    }
+  }
+
+  return (
+    <View
+      ref={touchRef}
+      style={styles.sliderTouch}
+      onLayout={(e) => {
+        const w = e.nativeEvent.layout.width
+        trackWRef.current = w
+        setTrackW(w)
+        pos.setValue(clamp01((value - min) / (max - min)) * Math.max(1, w - THUMB))
+      }}
+      onStartShouldSetResponder={() => true}
+      onMoveShouldSetResponder={() => true}
+      onResponderTerminationRequest={() => false}
+      onResponderGrant={(e) => {
+        touchRef.current?.measureInWindow((x) => {
+          originXRef.current = x
+          setFromPageX(e.nativeEvent.pageX)
+        })
+      }}
+      onResponderMove={(e) => setFromPageX(e.nativeEvent.pageX)}
+    >
+      <View style={styles.sliderTrack}>
+        <Animated.View
+          pointerEvents="none"
+          style={[styles.sliderFill, { transform: [{ scaleX: fillScale }] }]}
+        />
+        <Animated.View
+          pointerEvents="none"
+          style={[styles.sliderThumb, { transform: [{ translateX: pos }] }]}
+        />
+      </View>
+    </View>
+  )
+}
+
+export function MenuSheet({ visible, onStart, onHowTo }: MenuSheetProps) {
   const [humanSide, setHumanSide] = useState<Cell>(1)
   const [difficulty, setDifficulty] = useState<Difficulty>('hard')
   const [size, setSize] = useState(3)
@@ -119,7 +200,10 @@ export function MenuSheet({ visible, onStart }: MenuSheetProps) {
             <Segmented options={DIFFICULTY_OPTIONS} value={difficulty} onChange={setDifficulty} />
 
             <Text style={styles.sectionLabel}>Board size</Text>
-            <Segmented options={SIZE_OPTIONS} value={size} onChange={setSize} />
+            <View style={styles.sizeRow}>
+              <SizeSlider value={size} min={MIN_SIZE} max={MAX_SIZE} onChange={setSize} />
+              <Text style={styles.sizeValue}>{size}×{size}×{size}</Text>
+            </View>
           </View>
 
           <Pressable
@@ -132,6 +216,17 @@ export function MenuSheet({ visible, onStart }: MenuSheetProps) {
               </Text>
             )}
           </Pressable>
+
+          {onHowTo != null && (
+            <Pressable
+              onPress={() => onHowTo({ humanSide, difficulty, size })}
+              style={({ pressed }) => [styles.howToBtn, pressed && styles.howToBtnPressed]}
+            >
+              {({ pressed }) => (
+                <Text style={[styles.howToText, pressed && styles.howToTextPressed]}>How to play</Text>
+              )}
+            </Pressable>
+          )}
         </Animated.View>
       </View>
     </Modal>
@@ -218,6 +313,54 @@ const styles = StyleSheet.create({
     color: Theme.cyan,
     fontWeight: '800',
   },
+  sizeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing(3),
+  },
+  sliderTouch: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingVertical: spacing(2),
+  },
+  sliderTrack: {
+    position: 'relative',
+    height: TRACK_H,
+    borderRadius: TRACK_H / 2,
+    backgroundColor: Theme.bg,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  sliderFill: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: TRACK_H / 2,
+    backgroundColor: 'rgba(34, 211, 238, 0.5)',
+    transformOrigin: 'left',
+  },
+  sliderThumb: {
+    position: 'absolute',
+    left: 0,
+    top: (TRACK_H - THUMB) / 2,
+    width: THUMB,
+    height: THUMB,
+    borderRadius: THUMB / 2,
+    backgroundColor: Theme.cyan,
+    shadowColor: Theme.cyan,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+  },
+  sizeValue: {
+    minWidth: spacing(12),
+    textAlign: 'right',
+    color: Theme.cyan,
+    fontSize: fontSize(13),
+    fontWeight: '800',
+  },
   startBtn: {
     marginTop: spacing(5),
     paddingVertical: spacing(3.5),
@@ -242,5 +385,23 @@ const styles = StyleSheet.create({
   },
   startBtnTextPressed: {
     color: Theme.bg,
+  },
+  howToBtn: {
+    marginTop: spacing(3),
+    paddingVertical: spacing(1.5),
+    alignItems: 'center',
+  },
+  howToBtnPressed: {
+    opacity: 0.6,
+  },
+  howToText: {
+    color: Theme.muted,
+    fontSize: fontSize(12),
+    fontWeight: '700',
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+  },
+  howToTextPressed: {
+    color: Theme.cyan,
   },
 })

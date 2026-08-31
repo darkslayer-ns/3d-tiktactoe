@@ -10,7 +10,44 @@
 
 import type { Cell } from '../game/types'
 import type { EvalEngine, EvalResult } from './types'
-import { evalPosition, isAvailable, load } from '../native/TfmEngine'
+import { evalPosition, evalPositions, isAvailable, load } from '../native/TfmEngine'
+
+/**
+ * Bounded LRU over normalized board signatures. The search calls evalPosition
+ * on the SAME position repeatedly (apply → eval → undo), so a tiny result
+ * cache removes a chunk of duplicate native forwards. Pure function — safe.
+ */
+class BoardMemo {
+  private max: number
+  private map = new Map<string, EvalResult>()
+  constructor(max = 4096) {
+    this.max = max
+  }
+  private key(norm: readonly number[], mask: readonly number[], n: number): string {
+    let s = n + ':'
+    for (let i = 0; i < norm.length; i++) s += norm[i] + (mask[i] ? '1' : '0')
+    return s
+  }
+  get(norm: readonly number[], mask: readonly number[], n: number): EvalResult | undefined {
+    const k = this.key(norm, mask, n)
+    const v = this.map.get(k)
+    if (v) {
+      // LRU touch: re-insert at the end
+      this.map.delete(k)
+      this.map.set(k, v)
+    }
+    return v
+  }
+  set(norm: readonly number[], mask: readonly number[], n: number, res: EvalResult): void {
+    this.map.set(this.key(norm, mask, n), res)
+    if (this.map.size > this.max) {
+      const oldest = this.map.keys().next().value
+      if (oldest !== undefined) this.map.delete(oldest)
+    }
+  }
+}
+
+export const boardMemo = new BoardMemo()
 
 class NativeEngine implements EvalEngine {
   constructor() {
@@ -26,7 +63,19 @@ class NativeEngine implements EvalEngine {
       norm[i] = c === 0 ? 0 : c === player ? 1 : 2
       mask[i] = c === 0 ? 1 : 0
     }
-    return evalPosition(norm, mask, size)
+    const cached = boardMemo.get(norm, mask, size)
+    if (cached) return cached
+    const res = evalPosition(norm, mask, size)
+    boardMemo.set(norm, mask, size, res)
+    return res
+  }
+
+  evalPositions(
+    boards: readonly number[],
+    masks: readonly number[],
+    n: number,
+  ): { values: number[]; policies: number[] } {
+    return evalPositions(boards as number[], masks as number[], n)
   }
 }
 

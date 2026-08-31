@@ -181,6 +181,17 @@ export class LookaheadMover {
     }
   }
 
+  /**
+   * Node budget scaled by cube size so a move's compute stays roughly constant
+   * as the board grows (a 6×6×6 forward is ~60× the FLOPs of 3×3×3). n=3 is
+   * unchanged (factor 1), so parity and existing decisions are unaffected.
+   */
+  private _effMaxNodes(): number {
+    const n = this.board.n
+    const k = 27 / (n * n * n)
+    return Math.max(24, Math.round(this.maxNodes * k))
+  }
+
   constructor(
     model: EvalEngine | null,
     board: Board,
@@ -220,6 +231,18 @@ export class LookaheadMover {
     return [sigmoid(value), policy]
   }
 
+  /** Same tokenization as NativeEngine.evalPosition (side-to-move = token 1). */
+  private _normalize(cells: readonly Cell[], side: Cell): { norm: number[]; mask: number[] } {
+    const norm = new Array<number>(cells.length)
+    const mask = new Array<number>(cells.length)
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i]
+      norm[i] = c === 0 ? 0 : c === side ? 1 : 2
+      mask[i] = c === 0 ? 1 : 0
+    }
+    return { norm, mask }
+  }
+
   /** One forward: (win-prob for player, greedy move for player). */
   private _evaluate(board: Board, player: Cell): [number, number] {
     const [value, policy] = this._forward(board, player)
@@ -251,7 +274,7 @@ export class LookaheadMover {
   private async _opponentExpected(board: Board, ai: Cell, depth: number, topK?: number): Promise<number> {
     if (topK === undefined) topK = this.topK
     this._nodes += 1
-    if (this._nodes > this.maxNodes) {
+    if (this._nodes > this._effMaxNodes()) {
       return this._evaluate(board, ai)[0]
     }
 
@@ -263,6 +286,12 @@ export class LookaheadMover {
 
     let total = 0.0
     for (const [, p] of dist) total += p
+
+    // leaf level: the replies' values are independent → evaluate in one batch
+    if (depth <= 1) {
+      return this._opponentLeaves(board, ai, dist, total)
+    }
+
     let exp = 0.0
     const nextTopK = Math.max(1, topK - 1)
     for (const [r, pr] of dist) {
@@ -273,16 +302,71 @@ export class LookaheadMover {
       let rv: number
       if (t !== null) {
         rv = t
-      } else if (depth > 1) {
+      } else {
         const a = this._evaluate(board, ai)[1]
         board.apply(a, ai)
         rv = await this._opponentExpected(board, ai, depth - 1, nextTopK)
         board.cells[a] = EMPTY
-      } else {
-        rv = this._evaluate(board, ai)[0]
       }
       exp += w * rv
       board.cells[r] = EMPTY
+    }
+    return exp
+  }
+
+  /**
+   * Batches the depth-1 "opponent reply" leaf evaluations for one node. Same
+   * positions, same values as the sequential path — just fewer native calls
+   * (and parallel computation on the native side).
+   */
+  private async _opponentLeaves(
+    board: Board,
+    ai: Cell,
+    dist: Array<[number, number]>,
+    total: number,
+  ): Promise<number> {
+    const opp: Cell = ai === P1 ? P2 : P1
+    const n = board.n
+    const CHUNK = 8
+    const rv = new Map<number, number>()
+    const pending: Array<{ r: number; cells: Cell[] }> = []
+
+    for (const [r] of dist) {
+      await this._maybeYield()
+      board.apply(r, opp)
+      const t = this._terminal(board, ai)
+      if (t !== null) {
+        rv.set(r, t)
+      } else {
+        pending.push({ r, cells: board.cells.slice() })
+      }
+      board.cells[r] = EMPTY
+    }
+
+    const model = this._require()
+    for (let i = 0; i < pending.length; i += CHUNK) {
+      const chunk = pending.slice(i, i + CHUNK)
+      const flatN: number[] = []
+      const flatM: number[] = []
+      for (const p of chunk) {
+        const { norm, mask } = this._normalize(p.cells, ai)
+        flatN.push(...norm)
+        flatM.push(...mask)
+      }
+      let vals: number[]
+      if (model.evalPositions) {
+        vals = model.evalPositions(flatN, flatM, n).values.map(sigmoid)
+      } else {
+        vals = chunk.map((p) => sigmoid(model.evalPosition(p.cells, ai, n).value))
+      }
+      for (let j = 0; j < chunk.length; j++) rv.set(chunk[j].r, vals[j])
+      if (i + CHUNK < pending.length) await this._maybeYield()
+    }
+
+    let exp = 0.0
+    for (const [r, pr] of dist) {
+      const w = pr / total
+      exp += w * (rv.get(r) ?? 0)
     }
     return exp
   }
@@ -291,7 +375,7 @@ export class LookaheadMover {
   private async _evalMove(board: Board, m: number, ai: Cell, depth?: number): Promise<number> {
     if (depth === undefined) depth = this.depth
     this._nodes += 1
-    if (this._nodes > this.maxNodes) {
+    if (this._nodes > this._effMaxNodes()) {
       const opp: Cell = ai === P1 ? P2 : P1
       const v = 1.0 - this._valueFor(board, opp)
       board.cells[m] = EMPTY
@@ -382,6 +466,31 @@ export class LookaheadMover {
     }
     this._recordDecision(ai, best, scored, 'search')
     return best
+  }
+
+  /** Best move for `side` on the live board, ignoring difficulty blunders and
+   *  randomness — this is what a HINT button should recommend. Does not mutate
+   *  the board. */
+  async getHint(side: Cell): Promise<number> {
+    const moves = this.board.moves()
+    if (moves.length === 0) return -1
+    const search = new Board(this.board.n, this.board.cells)
+    for (const m of moves) {
+      search.apply(m, side)
+      const { winner: w } = search.outcome()
+      search.cells[m] = EMPTY
+      if (w === side) return m
+    }
+    const opp: Cell = side === P1 ? P2 : P1
+    for (const m of moves) {
+      search.apply(m, opp)
+      const { winner: w } = search.outcome()
+      search.cells[m] = EMPTY
+      if (w === opp) return m
+    }
+    this._nodes = 0
+    const scored = (await this._scored(side, moves, search)).sort((a, b) => b[1] - a[1])
+    return scored.length > 0 ? scored[0][0] : -1
   }
 
   private _recordDecision(
@@ -498,13 +607,75 @@ export class LookaheadMover {
     return scored[0][0]
   }
 
-  /** (move, expected-value) list from the lookahead search. */
+  /** (move, expected-value) list from the lookahead search. At depth 1 every
+   * candidate is a single net evaluation, so they're batched into chunked
+   * native calls (parallel on-device); deeper searches fall back to the
+   * sequential recursion (identical values either way). */
   private async _scored(ai: Cell, moves: number[], search: Board): Promise<Array<[number, number]>> {
+    if (this.depth <= 1 && this._require().evalPositions) {
+      return this._scoredBatched(ai, moves, search)
+    }
     const out: Array<[number, number]> = []
     for (const m of moves) {
       await this._maybeYield()
       out.push([m, await this._evalMove(search, m, ai)])
     }
+    return out
+  }
+
+  private async _scoredBatched(ai: Cell, moves: number[], search: Board): Promise<Array<[number, number]>> {
+    const opp: Cell = ai === P1 ? P2 : P1
+    const n = search.n
+    const CHUNK = 8
+    const values = new Map<number, number>()
+    const pending: Array<{ m: number; cells: Cell[] }> = []
+    let overCap = false
+
+    for (const m of moves) {
+      await this._maybeYield()
+      this._nodes += 1
+      if (this._nodes > this._effMaxNodes()) {
+        overCap = true
+        continue
+      }
+      search.apply(m, ai)
+      const t = this._terminal(search, ai)
+      if (t !== null) {
+        values.set(m, t)
+      } else {
+        pending.push({ m, cells: search.cells.slice() })
+      }
+      search.cells[m] = EMPTY
+    }
+
+    let baseValue = 0
+    if (overCap) {
+      const r = this._require().evalPosition(search.cells, opp, n)
+      baseValue = 1 - sigmoid(r.value)
+    }
+
+    const model = this._require()
+    for (let i = 0; i < pending.length; i += CHUNK) {
+      const chunk = pending.slice(i, i + CHUNK)
+      const flatN: number[] = []
+      const flatM: number[] = []
+      for (const p of chunk) {
+        const { norm, mask } = this._normalize(p.cells, opp)
+        flatN.push(...norm)
+        flatM.push(...mask)
+      }
+      let vals: number[]
+      if (model.evalPositions) {
+        vals = model.evalPositions(flatN, flatM, n).values.map(sigmoid)
+      } else {
+        vals = chunk.map((p) => sigmoid(model.evalPosition(p.cells, opp, n).value))
+      }
+      for (let j = 0; j < chunk.length; j++) values.set(chunk[j].m, 1 - vals[j])
+      if (i + CHUNK < pending.length) await this._maybeYield()
+    }
+
+    const out: Array<[number, number]> = []
+    for (const m of moves) out.push([m, values.get(m) ?? baseValue])
     return out
   }
 }

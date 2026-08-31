@@ -14,6 +14,7 @@ import type { Cell } from '../game/types'
 import type { EvalEngine } from './types'
 import { sigmoid, softmax } from './math'
 import { requireEngine } from './mover'
+import type { Affinity } from './opponentMemory'
 
 export class OpponentPredictor {
   readonly board: Board
@@ -23,13 +24,18 @@ export class OpponentPredictor {
   affinity: Map<number, Map<number, number>>
   played: Record<number, number[]>
 
-  constructor(board: Board, model: EvalEngine | null, decay = 0.9) {
+  constructor(
+    board: Board,
+    model: EvalEngine | null,
+    decay = 0.9,
+    initialAffinity?: Affinity,
+  ) {
     const { engine, error } = requireEngine(model)
     this.board = board
     this.model = engine
     this.error = error
     this.decay = decay
-    this.affinity = new Map<number, Map<number, number>>()
+    this.affinity = initialAffinity ?? new Map<number, Map<number, number>>()
     this.played = { [P1]: [], [P2]: [] }
   }
 

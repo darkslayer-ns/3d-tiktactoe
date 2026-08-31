@@ -8,7 +8,7 @@ export const P2: Cell = 2
 
 export type Coord = [number, number, number]
 
-export const SUPPORTED_SIZES = [3, 4, 5] as const
+export const SUPPORTED_SIZES = [3, 4, 5, 6] as const
 export type BoardSize = (typeof SUPPORTED_SIZES)[number]
 
 /** index = x + n*(y + n*z) */

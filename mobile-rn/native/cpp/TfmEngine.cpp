@@ -132,6 +132,67 @@ jsi::Value hostNumel(jsi::Runtime& rt, EngineState& st) {
   return jsi::Value(st.model->numel());
 }
 
+jsi::Value hostEvalPositions(jsi::Runtime& rt, EngineState& st,
+                             const jsi::Value& boardsValue,
+                             const jsi::Value& maskValue,
+                             const jsi::Value& nValue) {
+  const int n = static_cast<int>(nValue.asNumber());
+  if (n < 1 || n > 6) {
+    throw jsi::JSError(rt, "TfmEngine evalPositions: n must be in [1, 6]");
+  }
+  const size_t N = (size_t)boardSize(n);
+
+  jsi::Array boardsArr = boardsValue.asObject(rt).asArray(rt);
+  jsi::Array maskArr = maskValue.asObject(rt).asArray(rt);
+  const size_t total = (size_t)boardsArr.length(rt);
+  if (total == 0 || total % N != 0 || (size_t)maskArr.length(rt) != total) {
+    throw jsi::JSError(
+        rt, "TfmEngine evalPositions: boards/mask lengths must be equal and "
+            "multiples of n^3");
+  }
+  const int count = (int)(total / N);
+
+  std::vector<int> boards(total);
+  std::vector<uint8_t> masks(total);
+  for (size_t i = 0; i < total; ++i) {
+    const double b = boardsArr.getValueAtIndex(rt, (int)i).asNumber();
+    const double m = maskArr.getValueAtIndex(rt, (int)i).asNumber();
+    if (b < 0.0 || b > 2.0 || b != std::floor(b)) {
+      throw jsi::JSError(rt,
+                         "TfmEngine evalPositions: board tokens must be "
+                         "integers in {0, 1, 2}");
+    }
+    boards[i] = static_cast<int>(b);
+    masks[i] = m != 0.0 ? 1 : 0;
+  }
+
+  std::string err;
+  if (!ensureLoaded(st, &err)) {
+    throw jsi::JSError(rt, "TfmEngine evalPositions: " + err);
+  }
+  std::shared_ptr<tfm::Model> model;
+  {
+    std::lock_guard<std::mutex> lock(st.mu);
+    model = st.model;
+  }
+
+  std::vector<float> values(count);
+  std::vector<float> policies(total);
+  model->forwardBatch(n, count, boards.data(), masks.data(), values.data(),
+                      policies.data());
+
+  jsi::Object result(rt);
+  jsi::Array valuesArr(rt, count);
+  for (int i = 0; i < count; ++i) valuesArr.setValueAtIndex(rt, i, values[i]);
+  result.setProperty(rt, "values", valuesArr);
+  jsi::Array policyArr(rt, (int)total);
+  for (size_t i = 0; i < total; ++i) {
+    policyArr.setValueAtIndex(rt, (int)i, policies[i]);
+  }
+  result.setProperty(rt, "policies", policyArr);
+  return result;
+}
+
 jsi::Value makeHostFunction(
     jsi::Runtime& rt, const jsi::PropNameID& name, unsigned int argCount,
     std::function<jsi::Value(jsi::Runtime&, const jsi::Value*, size_t)> fn) {
@@ -172,6 +233,13 @@ class TfmEngineHostObject : public jsi::HostObject {
         return hostEvalPosition(r, *state, args[0], args[1], args[2]);
       });
     }
+    if (n == "evalPositions") {
+      return makeHostFunction(rt, name, 3, [state](jsi::Runtime& r,
+                                                   const jsi::Value* args,
+                                                   size_t) -> jsi::Value {
+        return hostEvalPositions(r, *state, args[0], args[1], args[2]);
+      });
+    }
     if (n == "numel") {
       return makeHostFunction(rt, name, 0, [state](jsi::Runtime& r,
                                                    const jsi::Value*,
@@ -186,6 +254,7 @@ class TfmEngineHostObject : public jsi::HostObject {
     std::vector<jsi::PropNameID> names;
     names.push_back(jsi::PropNameID::forUtf8(rt, "load"));
     names.push_back(jsi::PropNameID::forUtf8(rt, "evalPosition"));
+    names.push_back(jsi::PropNameID::forUtf8(rt, "evalPositions"));
     names.push_back(jsi::PropNameID::forUtf8(rt, "numel"));
     return names;
   }
@@ -215,6 +284,8 @@ TfmEngineTurboModule::TfmEngineTurboModule(
       react::TurboModule::MethodMetadata{0, &TfmEngineTurboModule::loadHost};
   methodMap_["evalPosition"] = react::TurboModule::MethodMetadata{
       3, &TfmEngineTurboModule::evalPositionHost};
+  methodMap_["evalPositions"] = react::TurboModule::MethodMetadata{
+      3, &TfmEngineTurboModule::evalPositionsHost};
   methodMap_["numel"] =
       react::TurboModule::MethodMetadata{0, &TfmEngineTurboModule::numelHost};
 }
@@ -231,10 +302,17 @@ jsi::Value TfmEngineTurboModule::loadHost(
 }
 
 jsi::Value TfmEngineTurboModule::evalPositionHost(
-    jsi::Runtime& rt, react::TurboModule& module, const jsi::Value* args,
+    facebook::jsi::Runtime& rt, react::TurboModule& module, const jsi::Value* args,
     size_t) {
   auto& self = static_cast<TfmEngineTurboModule&>(module);
   return hostEvalPosition(rt, *self.state_, args[0], args[1], args[2]);
+}
+
+jsi::Value TfmEngineTurboModule::evalPositionsHost(
+    facebook::jsi::Runtime& rt, react::TurboModule& module, const jsi::Value* args,
+    size_t) {
+  auto& self = static_cast<TfmEngineTurboModule&>(module);
+  return hostEvalPositions(rt, *self.state_, args[0], args[1], args[2]);
 }
 
 jsi::Value TfmEngineTurboModule::numelHost(

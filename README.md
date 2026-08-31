@@ -319,7 +319,25 @@ tendencies across sessions — heuristic, on-device, no weight updates.
 
 ---
 
-## Repo map (ML parts)
+## Repo map
+
+The repo is split into the shipping app (`mobile-rn/`) plus the shared engine it
+compiles (`cpp/`), with all offline development/ML tooling under `dev/`.
+
+```
+mobile-rn/                 the ISOCUBE app (Expo/React Native)
+cpp/                       shared C++ transformer engine (compiled into the app)
+dev/                       everything else: training, backend, web, tooling
+dev/
+  backend/                 game rules, ML agent wiring, server, alpha-beta distill
+  training/                PyTorch training: model.py, selfplay, trainers
+  scripts/                 training/export/calibration scripts
+  frontend/                web frontend (Vite/React)
+  mobile/                  legacy Flutter prototype (unmaintained)
+  model_universal.pt       trained checkpoint
+```
+
+ML parts in detail:
 
 ```
 training/
@@ -329,7 +347,7 @@ training/
   train_distill.py    alpha-beta distillation trainer
   eval.py             strength evaluation vs random
   torch_loader.py     checkpoint loader + TorchModelAdapter (eval seam)
-backend/
+dev/backend/
   distill/            Go alpha-beta solver (distillation teacher)
   ml/                 game-server AI wiring (torch-free)
 cpp/

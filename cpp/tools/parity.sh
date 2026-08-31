@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CKPT="${1:-$(python3 -c 'from backend.ml.model_agent import base_checkpoint_path; print(base_checkpoint_path(3))')}"
+CKPT="${1:-$(realpath ../dev/model_universal.pt)}"
 if [[ ! -f "$CKPT" ]]; then
   echo "checkpoint not found: $CKPT" >&2
   exit 1

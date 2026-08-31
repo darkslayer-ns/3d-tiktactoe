@@ -57,7 +57,7 @@ describe('LookaheadMover', () => {
     expect(mover.lastDecision?.scored.length).toBeGreaterThan(0)
   })
 
-  it('caps the wrong-move budget on easy (one blunder, then a sane move)', async () => {
+  it('easy makes blunders up to its budget (budget > 1)', async () => {
     const b = new Board(3)
     // No two cells of the same player are collinear -> no immediate win/block,
     // so the search runs and consumes the scripted draws exactly as expected.
@@ -67,15 +67,15 @@ describe('LookaheadMover', () => {
     for (const [i, pl] of placed) b.apply(i, pl)
 
     const engine = legalEngine()
-    // call1: move_temp pick (0.99) -> blunder check (0.1 < 0.5) -> choice picks
-    //        moves[8] = 11 (a cell that creates no immediate win/block threat)
-    // call2: move_temp pick (0.99) -> blunder check WOULD trigger (0.1 < 0.5)
-    //        but the budget is spent, so no draw is consumed and it stays sane.
+    // call1: move_temp pick -> blunder check (0.1 < 0.45) -> choice
+    // call2: same again — the budget (6) is not exhausted, so it blunders again.
     const { rng, remaining } = scriptedRng([
       { kind: 'random', value: 0.99 },
       { kind: 'random', value: 0.1 },
       { kind: 'choice', value: 8, len: 21 },
       { kind: 'random', value: 0.99 },
+      { kind: 'random', value: 0.1 },
+      { kind: 'choice', value: 10, len: 20 },
     ])
     const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'easy', rng)
 
@@ -86,7 +86,7 @@ describe('LookaheadMover', () => {
 
     const m2 = await mover.chooseMove(P1)
     expect(b.cells[m2]).toBe(EMPTY)
-    expect(mover.lastDecision?.kind).toBe('search')
+    expect(mover.lastDecision?.kind).toBe('blunder')
     expect(remaining()).toBe(0)
   })
 

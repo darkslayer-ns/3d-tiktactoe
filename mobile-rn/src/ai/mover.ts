@@ -42,38 +42,39 @@ export interface DifficultyConfig {
 
 /** Pure RUNTIME config — all difficulties share the same strong base weights. */
 export const DIFFICULTY: Record<Difficulty, DifficultyConfig> = {
+  // Approx AI win rates: easy ~65%, medium ~80%, hard ~95%.
   easy: {
-    depth: 2,
+    depth: 1,
     top_k: 3,
     sampling: false,
     max_nodes: 220,
     entry_temp: 1.0,
-    entry_moves: 2,
-    wrong_move_budget: 1,
-    mistake_rate: 0.5,
-    move_temp: 0.8,
+    entry_moves: 3,
+    wrong_move_budget: 6,
+    mistake_rate: 0.45,
+    move_temp: 1.1,
   },
   medium: {
-    depth: 3,
+    depth: 2,
     top_k: 3,
     sampling: false,
     max_nodes: 220,
     entry_temp: 0.7,
     entry_moves: 1,
-    wrong_move_budget: 1,
-    mistake_rate: 0.5,
-    move_temp: 0.5,
+    wrong_move_budget: 2,
+    mistake_rate: 0.3,
+    move_temp: 0.6,
   },
   hard: {
     depth: 4,
     top_k: 3,
     sampling: false,
     max_nodes: 220,
-    entry_temp: 0.5,
+    entry_temp: 0.3,
     entry_moves: 1,
     wrong_move_budget: 0,
     mistake_rate: 0.0,
-    move_temp: 0.15,
+    move_temp: 0.1,
   },
 }
 

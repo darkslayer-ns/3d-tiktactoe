@@ -32,34 +32,48 @@ function directions(_n: number): Coord[] {
 
 /** All winning lines: n consecutive cells along a direction vector.
  *
+ * Every direction is a canonical primitive vector (no opposites, zero
+ * excluded) and each line's starting cell is the one nearest the origin along
+ * that direction, so no line is generated twice.
+ *
+ * Rather than scanning all n³ cells (as a naive triple loop would), we only
+ * enumerate VALID starting cells per direction: a +1 component forces the
+ * start coordinate to 0, -1 forces n-1, and 0 allows any value. Total work is
+ * exactly the line count (3n²+6n+4) instead of 13·n³ candidate checks. Lines
+ * are emitted per direction then re-sorted by (start cell, direction) so the
+ * output order matches the original cell-major enumeration.
+ *
  * Results are cached per board size.
  */
 export function buildLines(n: number): Coord[][] {
   const cached = _linesCache.get(n)
   if (cached) return cached
   const dirs = directions(n)
-  const lines: Coord[][] = []
-  for (let x = 0; x < n; x++) {
-    for (let y = 0; y < n; y++) {
-      for (let z = 0; z < n; z++) {
-        for (const d of dirs) {
-          const pts: Coord[] = []
-          let ok = true
+  const entries: Array<{ key: number; line: Coord[] }> = []
+  let dirIdx = 0
+  for (const [dx, dy, dz] of dirs) {
+    const xLo = dx === 1 ? 0 : dx === -1 ? n - 1 : 0
+    const xHi = dx === 0 ? n - 1 : xLo
+    const yLo = dy === 1 ? 0 : dy === -1 ? n - 1 : 0
+    const yHi = dy === 0 ? n - 1 : yLo
+    const zLo = dz === 1 ? 0 : dz === -1 ? n - 1 : 0
+    const zHi = dz === 0 ? n - 1 : zLo
+    for (let x = xLo; x <= xHi; x++) {
+      for (let y = yLo; y <= yHi; y++) {
+        for (let z = zLo; z <= zHi; z++) {
+          const line: Coord[] = new Array(n)
           for (let k = 0; k < n; k++) {
-            const cx = x + d[0] * k
-            const cy = y + d[1] * k
-            const cz = z + d[2] * k
-            if (cx < 0 || cx >= n || cy < 0 || cy >= n || cz < 0 || cz >= n) {
-              ok = false
-              break
-            }
-            pts.push([cx, cy, cz])
+            line[k] = [x + dx * k, y + dy * k, z + dz * k]
           }
-          if (ok) lines.push(pts)
+          entries.push({ key: ((x * n + y) * n + z) * dirs.length + dirIdx, line })
         }
       }
     }
+    dirIdx++
   }
+  entries.sort((a, b) => a.key - b.key)
+  const lines = new Array<Coord[]>(entries.length)
+  for (let i = 0; i < entries.length; i++) lines[i] = entries[i].line
   _linesCache.set(n, lines)
   return lines
 }

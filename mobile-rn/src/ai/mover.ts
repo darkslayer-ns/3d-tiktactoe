@@ -39,6 +39,13 @@ export interface DifficultyConfig {
   wrong_move_budget: number
   mistake_rate: number
   move_temp: number
+  /**
+   * How the AI makes its deliberate mistakes:
+   *   'random'      → plays a random empty cell (visibly dumb — EASY)
+   *   'suboptimal'  → plays a good-but-not-best move (subtle — MEDIUM)
+   *   'none'        → never blunders (HARD)
+   */
+  blunder_kind: 'random' | 'suboptimal' | 'none'
 }
 
 /** Pure RUNTIME config — all difficulties share the same strong base weights. */
@@ -51,20 +58,22 @@ export const DIFFICULTY: Record<Difficulty, DifficultyConfig> = {
     max_nodes: 220,
     entry_temp: 1.0,
     entry_moves: 3,
-    wrong_move_budget: 6,
-    mistake_rate: 0.45,
+    wrong_move_budget: 5,
+    mistake_rate: 0.5,
     move_temp: 1.1,
+    blunder_kind: 'random',
   },
   medium: {
     depth: 2,
     top_k: 3,
     sampling: false,
     max_nodes: 220,
-    entry_temp: 0.7,
+    entry_temp: 0.6,
     entry_moves: 1,
-    wrong_move_budget: 2,
-    mistake_rate: 0.3,
+    wrong_move_budget: 1,
+    mistake_rate: 0.7,
     move_temp: 0.6,
+    blunder_kind: 'suboptimal',
   },
   hard: {
     depth: 4,
@@ -76,6 +85,7 @@ export const DIFFICULTY: Record<Difficulty, DifficultyConfig> = {
     wrong_move_budget: 0,
     mistake_rate: 0.0,
     move_temp: 0.1,
+    blunder_kind: 'none',
   },
 }
 
@@ -162,9 +172,14 @@ export class LookaheadMover {
   readonly shiftRate: number
   wrongMoveBudget: number
   moveTemp: number
+  readonly blunderKind: 'random' | 'suboptimal' | 'none'
   lastDecision: AiDecision | null = null
   /** Player style: +1 attacker … -1 defender. Biases opponent-reply prediction. */
   aggression = 0
+  /** Adaptive strength from recent results: +1 ease … -1 harden. */
+  adaptiveLevel = 0
+  /** Whether the last _strongMove was forced (immediate win/block). */
+  private _lastForced: 'win' | 'block' | null = null
   private rng: Rng
   private _nodes = 0
   private _wrongMovesUsed = 0
@@ -209,10 +224,19 @@ export class LookaheadMover {
    * level < 0 hardens (fewer blunders — for a dominant player).
    */
   setAdaptive(level: number): void {
-    const l = Math.max(-1, Math.min(1, level))
-    this.mistakeRate = Math.max(0, Math.min(0.8, this._baseMistakeRate + l * 0.3))
-    this.moveTemp = Math.max(0, Math.min(1.2, this._baseMoveTemp + l * 0.4))
-    this.wrongMoveBudget = Math.max(0, Math.round(this._baseWrongMoveBudget + l * 2))
+    this.adaptiveLevel = Math.max(-1, Math.min(1, level))
+    this.moveTemp = Math.max(0, Math.min(1.2, this._baseMoveTemp + level * 0.4))
+    this.wrongMoveBudget = Math.max(0, Math.round(this._baseWrongMoveBudget + level * 2))
+  }
+
+  /**
+   * Reinforcement-weighted mistake rate (the "fuzzy" lever): starts from the
+   * difficulty's base, then eases up when the player is losing more than the
+   * difficulty target (adaptiveLevel from stored win/loss stats) and adds a
+   * small style fuzz (+ for attackers, − for defenders). Clamped to [0, 0.8].
+   */
+  private _effectiveMistakeRate(): number {
+    return Math.max(0, Math.min(0.8, this._baseMistakeRate + this.adaptiveLevel * 0.3 + this.aggression * 0.1))
   }
 
   /** Does the human playing `r` count as an attacking reply? (win or threat). */
@@ -275,6 +299,7 @@ export class LookaheadMover {
     this.shiftRate = 0.0
     this.wrongMoveBudget = cfg.wrong_move_budget
     this.moveTemp = cfg.move_temp
+    this.blunderKind = cfg.blunder_kind ?? 'random'
     this._baseMistakeRate = cfg.mistake_rate
     this._baseMoveTemp = cfg.move_temp
     this._baseWrongMoveBudget = cfg.wrong_move_budget
@@ -464,6 +489,27 @@ export class LookaheadMover {
     return v
   }
 
+  /** Pick the deliberate-mistake cell. 'random' plays anywhere (EASY, visibly
+   * dumb); 'suboptimal' plays a good-but-not-best move (MEDIUM, subtle).
+   * Both consume a single RNG draw so parity sequences are unchanged. */
+  private _pickBlunder(
+    moves: number[],
+    scored: Array<[number, number]> | null,
+    best: number,
+  ): number {
+    if (this.blunderKind === 'suboptimal') {
+      // medium: a good-but-not-best move; when gifting a win, never the win itself.
+      if (scored && scored.length > 1) {
+        const maxRank = Math.min(scored.length - 1, 3)
+        const rank = 1 + Math.floor(this.rng.random() * maxRank)
+        return scored[rank][0]
+      }
+      const others = moves.filter((m) => m !== best)
+      return others.length > 0 ? this.rng.choice(others) : this.rng.choice(moves)
+    }
+    return this.rng.choice(moves)
+  }
+
   /** An empty box adjacent (Chebyshev ≤ 1) to `best`, or `best` if none. */
   private _shiftedMove(best: number): number {
     const n = this.board.n
@@ -504,18 +550,28 @@ export class LookaheadMover {
 
     const best = await this._strongMove(ai, moves)
     const scored = this._lastScored
+    const forced = this._lastForced
 
-    // deliberate wrong moves: blunder at most `wrong_move_budget` times per
-    // game (the cap makes "easy" beatable while later moves stay sane).
-    // Applied AFTER the strong move so it overrides even an immediate
-    // win/block — a genuine blunder.
-    if (
-      this.mistakeRate > 0 &&
-      this._wrongMovesUsed < this.wrongMoveBudget &&
-      this.rng.random() < this.mistakeRate
-    ) {
+    // Deliberate mistakes, gated by difficulty rules:
+    //  - easy (random): may blunder ANY move, EXCEPT when it would win or must
+    //    block (never throws away a win / never misses a block).
+    //  - medium (suboptimal): exactly `wrong_move_budget` (1) mistakes, and only
+    //    when it's ABOUT TO WIN — it gifts the win once, but never fails to block.
+    // The effective mistake rate is the reinforcement-weighted (fuzzy) rate.
+    const rate = this._effectiveMistakeRate()
+    const withinBudget = this._wrongMovesUsed < this.wrongMoveBudget
+    const shouldBlunder =
+      rate > 0 &&
+      withinBudget &&
+      (this.blunderKind === 'random'
+        ? forced === null && this.rng.random() < rate
+        : this.blunderKind === 'suboptimal'
+          ? forced === 'win' && this.rng.random() < rate
+          : false)
+
+    if (shouldBlunder) {
       this._wrongMovesUsed += 1
-      const final = this.rng.choice(moves)
+      const final = this._pickBlunder(moves, scored, best)
       this._recordDecision(ai, final, scored, 'blunder')
       return final
     }
@@ -614,13 +670,17 @@ export class LookaheadMover {
     const opp: Cell = ai === P1 ? P2 : P1
     this._nodes = 0
     this._lastScored = null
+    this._lastForced = null
 
     // immediate win
     for (const m of moves) {
       search.apply(m, ai)
       const { winner: w } = search.outcome()
       search.cells[m] = EMPTY
-      if (w === ai) return m
+      if (w === ai) {
+        this._lastForced = 'win'
+        return m
+      }
     }
 
     // immediate block: opponent wins next move unless we take that cell
@@ -628,7 +688,10 @@ export class LookaheadMover {
       search.apply(m, opp)
       const { winner: w } = search.outcome()
       search.cells[m] = EMPTY
-      if (w === opp) return m
+      if (w === opp) {
+        this._lastForced = 'block'
+        return m
+      }
     }
 
     const scored = (await this._scored(ai, moves, search)).sort((a, b) => b[1] - a[1])

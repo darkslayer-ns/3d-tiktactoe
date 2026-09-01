@@ -19,7 +19,11 @@ export const GestureHandlerRootView = ({
 }: {
   children: ReactNode
   style?: any
-}) => <div style={style}>{children}</div>
+}) => (
+  <div style={{ height: '100%', display: 'flex', flexDirection: 'column', ...style }}>
+    {children}
+  </div>
+)
 
 export const Gesture = {
   Pan: chainable,

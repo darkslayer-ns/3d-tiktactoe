@@ -348,6 +348,30 @@ function patchXcodeProject(xcodeProject, projectName) {
         cfgObj.buildSettings.HEADER_SEARCH_PATHS = list;
       }
     }
+
+    // Generate dSYMs for the RN prebuilt frameworks (React, ReactNativeDependencies,
+    // hermesvm) — they ship without dSYMs, so the archive misses them and App Store
+    // Connect symbol upload fails. dsymutil on the built product creates the dSYM
+    // next to it; Xcode's archive step then collects it. Idempotent.
+    const scriptPhases = (xcodeProject.hash.project.objects.PBXShellScriptBuildPhase) || {};
+    let hasDsymPhase = false;
+    for (const key of Object.keys(scriptPhases)) {
+      if (COMMENT_KEY.test(key)) continue;
+      if ((scriptPhases[key].name || '').indexOf('Generate RN prebuilt dSYMs') >= 0) {
+        hasDsymPhase = true;
+        break;
+      }
+    }
+    if (!hasDsymPhase) {
+      const script =
+        'set -e; for fw in React ReactNativeDependencies hermesvm; do DEST=$BUILT_PRODUCTS_DIR/$fw.framework.dSYM; ' +
+        'if [ ! -d $DEST ]; then BIN=$(find $BUILT_PRODUCTS_DIR -path *$fw.framework/$fw -print -quit 2>/dev/null); ' +
+        'if [ -n ${BIN} ]; then dsymutil -o $DEST $BIN >/dev/null 2>&1 || true; fi; fi; done\n';
+      xcodeProject.addBuildPhase([], 'PBXShellScriptBuildPhase', 'Generate RN prebuilt dSYMs', targetUuid, {
+        shellPath: '/bin/sh',
+        shellScript: script,
+      });
+    }
   }
   return xcodeProject;
 }

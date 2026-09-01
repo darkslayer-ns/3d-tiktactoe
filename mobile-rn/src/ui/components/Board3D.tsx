@@ -141,7 +141,7 @@ interface MarkProps {
 
 function Mark({ value, index, position, highlighted, dim, interactive, onPointerDown, onClick }: MarkProps) {
   const scale = 0.55
-  const intensity = dim ? 0.12 : highlighted ? 2.2 : 0.9
+  const intensity = dim ? 0.35 : highlighted ? 2.2 : 0.9
   // Non-interactive marks stay visible but are never hit by the raycaster.
   const meshProps = interactive ? {} : { raycast: () => null }
 
@@ -259,8 +259,8 @@ function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPo
       e.color.set('#0284c7')
       e.opacity = (0.2 + 0.15 * (0.5 + 0.5 * Math.sin(t * 4))) * fade
     } else {
-      e.color.set(dim ? '#0a3a5c' : '#0284c7')
-      e.opacity = (dim ? 0.12 : 0.3) * fade
+      e.color.set(dim ? '#155e75' : '#0284c7')
+      e.opacity = (dim ? 0.28 : 0.3) * fade
     }
   })
 

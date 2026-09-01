@@ -49,6 +49,11 @@ class TfmEngineTurboModule
       facebook::react::TurboModule& module,
       const facebook::jsi::Value* args,
       size_t count);
+  static facebook::jsi::Value evalPositionsHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
   static facebook::jsi::Value numelHost(
       facebook::jsi::Runtime& rt,
       facebook::react::TurboModule& module,

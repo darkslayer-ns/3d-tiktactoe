@@ -17,9 +17,15 @@ export interface TfmResult {
   policy: number[]
 }
 
+export interface TfmBatchResult {
+  values: number[]
+  policies: number[]
+}
+
 interface TfmEngineNative {
   load: () => boolean
   evalPosition: (board: number[], mask: number[], n: number) => TfmResult
+  evalPositions: (boards: number[], masks: number[], n: number) => TfmBatchResult
   numel: () => number
 }
 
@@ -75,6 +81,20 @@ export function evalPosition(
 ): TfmResult {
   if (!Native) throw new Error('TfmEngine not available')
   return Native.evalPosition(board, mask, n)
+}
+
+/**
+ * Batched forward over several positions at once (single native call, computed
+ * in parallel on the native side). `boards`/`masks` are flat, concatenated
+ * n^3-length slices. Returns `count` values and `count * n^3` policies.
+ */
+export function evalPositions(
+  boards: number[],
+  masks: number[],
+  n: number,
+): TfmBatchResult {
+  if (!Native) throw new Error('TfmEngine not available')
+  return Native.evalPositions(boards, masks, n)
 }
 
 /** Total parameter count of the loaded model (sanity check). -1 if absent. */

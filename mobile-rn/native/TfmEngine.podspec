@@ -38,6 +38,7 @@ Pod::Spec.new do |s|
   s.dependency "ReactCommon"
   s.dependency "React-jsi"
   s.dependency "React-callinvoker"
+  s.frameworks = "Accelerate"
 
   # --- Compile settings ------------------------------------------------------
   # RN's bridging headers (pulled in by TurboModule.h) require C++20.

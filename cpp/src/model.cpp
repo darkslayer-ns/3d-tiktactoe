@@ -1,6 +1,9 @@
 #include "tfm/model.hpp"
 
+#include <algorithm>
 #include <cstddef>
+#include <thread>
+#include <vector>
 
 namespace tfm {
 
@@ -47,6 +50,35 @@ void Model::forward(const int* board, const uint8_t* mask, int n,
   const int N = n * n * n;
   for (int i = 0; i < N; ++i)
     if (!mask[i]) policy[i] = kNegInf;
+}
+
+void Model::forwardBatch(int n, int count, const int* boards,
+                         const uint8_t* masks, float* values,
+                         float* policies) const {
+  if (count <= 0) return;
+  const int N = n * n * n;
+  const unsigned hw = std::thread::hardware_concurrency();
+  const int nThreads = std::min(count, hw > 0 ? (int)hw : 2);
+  const int chunk = (count + nThreads - 1) / nThreads;
+
+  auto worker = [&](int b0, int b1) {
+    for (int i = b0; i < b1; ++i) {
+      forward(boards + (size_t)i * N, masks + (size_t)i * N, n, values[i],
+              policies + (size_t)i * N);
+    }
+  };
+
+  std::vector<std::thread> pool;
+  pool.reserve((size_t)nThreads - 1);
+  int b0 = 0;
+  for (int t = 0; t < nThreads; ++t) {
+    const int b1 = std::min(count, b0 + chunk);
+    if (b1 <= b0) break;
+    if (t < nThreads - 1) pool.emplace_back(worker, b0, b1);
+    else worker(b0, b1);  // run the last chunk on the calling thread
+    b0 = b1;
+  }
+  for (auto& th : pool) th.join();
 }
 
 int Model::numel() const {

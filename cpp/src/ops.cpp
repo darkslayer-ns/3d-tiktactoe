@@ -3,11 +3,34 @@
 #include <cmath>
 #include <cstddef>
 
+#if defined(__APPLE__)
+// Use the modern Accelerate BLAS interface (macOS 13.3+ / iOS 16.4+). Without
+// ACCELERATE_LAPACK_ILP64 this keeps 32-bit integer dimensions, so the
+// cblas_sgemm signature is unchanged — only the deprecated classic entry
+// points are avoided.
+#define ACCELERATE_NEW_LAPACK
+#include <Accelerate/Accelerate.h>
+#endif
+
 namespace tfm {
 
 void linear(const Mat& x, const Mat& W, const Vec& b, Mat& y) {
   const int M = x.R, K = x.C, N = W.R;
   y = Mat(M, N);
+#if defined(__APPLE__)
+  // Accelerate GEMM: y(M×N) = x(M×K) * Wᵀ(K×N) + bias. Row-major, W stored
+  // N×K so it feeds the transposed operand directly. BLAS accumulation order
+  // differs from the scalar loop by ~1e-6 — comfortably inside the 1e-3
+  // parity tolerance. Falls through to the scalar path for empty matrices.
+  if (M > 0 && N > 0 && K > 0) {
+    float* yd = y.d.data();
+    for (int i = 0; i < M; ++i)
+      for (int j = 0; j < N; ++j) yd[(size_t)i * N + j] = b[j];
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, M, N, K, 1.0f,
+                x.d.data(), K, W.d.data(), K, 1.0f, yd, N);
+    return;
+  }
+#endif
   for (int i = 0; i < M; ++i) {
     const float* xi = x.row(i);
     for (int j = 0; j < N; ++j) {

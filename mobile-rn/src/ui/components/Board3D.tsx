@@ -35,7 +35,7 @@
 
 import { useMemo, useRef, useCallback, useEffect, type RefObject } from 'react'
 import { View, StyleSheet } from 'react-native'
-import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber/native'
+import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber/native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import * as THREE from 'three'
 import { Theme } from '../theme'
@@ -59,18 +59,17 @@ const MAX_PHI = Math.PI - 0.15
 
 const INITIAL_CAMERA_POSITION: [number, number, number] = [5, 4.5, 5.5]
 
-/**
- * Camera distance that fits the whole n×n×n cube (with the explode spread).
- * On a portrait phone the horizontal FOV is the limiting dimension, so we fit
- * the cube's bounding sphere to it (vertical FOV = 45°, aspect ≈ 0.5).
- */
-function fitDistance(size: number): number {
-  const halfExtent = (size * (1 + EXPLODE)) / 2
-  const circumRadius = halfExtent * Math.sqrt(3)
-  const vHalf = (45 * Math.PI) / 360
-  const hHalf = Math.atan(Math.tan(vHalf) * 0.5)
-  const d = circumRadius / Math.tan(hHalf)
-  return clamp(d * 1.05, MIN_DISTANCE, MAX_DISTANCE)
+/** Camera distance that fits the whole n×n×n cube (with the explode spread).
+ * Uses the REAL rendered half-extent (outermost cell center + half a cell box)
+ * so every board size fills the screen consistently. */
+function fitDistance(size: number, aspect = 0.5, vFovDeg = 45): number {
+  const halfExtent = ((size - 1) / 2) * (1 + EXPLODE) + SLOT_SIZE / 2
+  const radius = halfExtent * Math.sqrt(3)
+  const vHalf = (vFovDeg * Math.PI) / 360
+  const hHalf = Math.atan(Math.tan(vHalf) * Math.max(0.1, aspect))
+  const limitingHalf = Math.min(hHalf, vHalf)
+  const d = radius / Math.tan(limitingHalf)
+  return clamp(d * 1.1, MIN_DISTANCE, MAX_DISTANCE)
 }
 
 /** Spherical target the camera eases toward (theta/phi around cube center). */
@@ -87,10 +86,14 @@ export interface Board3DProps {
   pendingIndex: number | null
   winningLine: Coord[] | null
   lastAiMove: number | null
+  /** Cell recommended by the Hint button — pulses cyan. */
+  hintIndex: number | null
   /** true while the opponent is computing — drives the cube's pulse animation */
   thinking: boolean
   /** true when the cell may be selected by the player right now */
   interactive: (index: number) => boolean
+  /** increments on every game start — triggers the cube "teleports in" pop */
+  startKey: number
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -310,6 +313,56 @@ function LastAiMoveHighlight({ position }: { position: [number, number, number] 
 }
 
 /**
+ * "Teleport" pop-in: scales the cube from 0 up with a springy overshoot on
+ * every game start. Rendered INSIDE the Canvas so useFrame is valid here.
+ */
+function CubePop({ startKey, children }: { startKey: number; children: React.ReactNode }) {
+  const g = useRef<THREE.Group>(null)
+  const startRef = useRef(0)
+
+  useEffect(() => {
+    startRef.current = Date.now()
+  }, [startKey])
+
+  useFrame(() => {
+    const grp = g.current
+    if (!grp) return
+    const t = Math.min(1, (Date.now() - startRef.current) / 750)
+    if (t >= 1) {
+      grp.scale.setScalar(1)
+      return
+    }
+    const c1 = 1.70158
+    const c3 = c1 + 1
+    const s = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
+    grp.scale.setScalar(Math.max(0.001, s))
+  })
+
+  return <group ref={g}>{children}</group>
+}
+
+/**
+ * Keeps the cube fitted to the ACTUAL canvas viewport (real width/height, so
+ * the correct limiting FOV) until the user manually zooms.
+ */
+function FitRig({
+  size,
+  userZoomed,
+  target,
+}: {
+  size: number
+  userZoomed: RefObject<boolean>
+  target: RefObject<OrbitTarget>
+}) {
+  const { width, height } = useThree((s) => s.size)
+  useEffect(() => {
+    if (userZoomed.current) return
+    target.current.distance = fitDistance(size, width / Math.max(1, height))
+  }, [size, width, height, userZoomed, target])
+  return null
+}
+
+/**
  * Eases the camera along a spherical orbit toward `target` (fed by the
  * pan/pinch gestures). Runs inside the R3F frame loop.
  */
@@ -344,6 +397,7 @@ interface BoardMeshProps {
   pendingIndex: number | null
   winningLine: Coord[] | null
   lastAiMove: number | null
+  hintIndex: number | null
   thinking: boolean
   interactive: (index: number) => boolean
   onPointerDown: (e: ThreeEvent<PointerEvent>) => void
@@ -356,6 +410,7 @@ function BoardMesh({
   pendingIndex,
   winningLine,
   lastAiMove,
+  hintIndex,
   thinking,
   interactive,
   onPointerDown,
@@ -397,7 +452,7 @@ function BoardMesh({
             position={pos}
             interactive={interactive(index)}
             dim={dim}
-            pulse={onAxis}
+            pulse={onAxis || index === hintIndex}
             thinking={thinking}
             onPointerDown={onPointerDown}
             onClick={handleClick}
@@ -430,8 +485,10 @@ export function Board3D({
   pendingIndex,
   winningLine,
   lastAiMove,
+  hintIndex,
   thinking,
   interactive,
+  startKey,
 }: Board3DProps) {
   // Spherical orbit target, written by the gestures, read by OrbitRig.
   const target = useRef<OrbitTarget>(defaultOrbitTarget(size))
@@ -440,14 +497,6 @@ export function Board3D({
   const pinchStartDist = useRef(0)
   // Pointer-down position for the manual 10px click threshold (web parity).
   const downRef = useRef<{ x: number; y: number } | null>(null)
-
-  // Fit the whole cube only until the user zooms in — after that their zoom
-  // level is kept, so the view never jumps.
-  useEffect(() => {
-    if (!userZoomed.current) {
-      target.current.distance = fitDistance(size)
-    }
-  }, [size])
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation()
@@ -512,17 +561,21 @@ export function Board3D({
           <ambientLight intensity={0.5} />
           <pointLight position={[6, 6, 6]} intensity={1.2} color="#22d3ee" />
           <pointLight position={[-6, -4, 4]} intensity={0.8} color="#f472b6" />
-          <BoardMesh
-            size={size}
-            cells={cells}
-            pendingIndex={pendingIndex}
-            winningLine={winningLine}
-            lastAiMove={lastAiMove}
-            thinking={thinking}
-            interactive={interactive}
-            onPointerDown={handlePointerDown}
-            handleClick={handleClick}
-          />
+          <CubePop startKey={startKey}>
+            <BoardMesh
+              size={size}
+              cells={cells}
+              pendingIndex={pendingIndex}
+              winningLine={winningLine}
+              lastAiMove={lastAiMove}
+              hintIndex={hintIndex}
+              thinking={thinking}
+              interactive={interactive}
+              onPointerDown={handlePointerDown}
+              handleClick={handleClick}
+            />
+          </CubePop>
+          <FitRig size={size} userZoomed={userZoomed} target={target} />
           <OrbitRig target={target} />
         </Canvas>
       </View>

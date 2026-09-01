@@ -16,11 +16,14 @@ import { Theme, fontSize, radius, spacing } from '../theme'
 import { Board3D, axisCross } from '../components/Board3D'
 import { MenuSheet } from '../components/MenuSheet'
 import { StatusBar } from '../components/StatusBar'
+import { WelcomeOverlay } from '../components/WelcomeOverlay'
 import { EMPTY, P1, P2, type Cell } from '../../game/types'
 import { Board } from '../../game/board'
 import { createNativeEngine } from '../../ai/engine'
 import { OpponentPredictor } from '../../ai/predictor'
 import { LookaheadMover } from '../../ai/mover'
+import { applyResult, type Affinity } from '../../ai/opponentMemory'
+import { loadAffinity, saveAffinity, getWelcomed, setWelcomed } from '../../ai/opponentStorage'
 import { emptyState, type EvalEngine, type GameConfig, type GameState } from '../../ai/types'
 
 /** Short delay so "AI thinking…" is actually visible before the move lands. */
@@ -35,14 +38,21 @@ export function GameScreen() {
   const [snap, setSnap] = useState<GameState>(() => emptyState(3, 1))
   const [pending, setPending] = useState<number | null>(null)
   const [engineError, setEngineError] = useState<string | null>(null)
+  const [welcomeVisible, setWelcomeVisible] = useState(false)
+  const [welcomeMode, setWelcomeMode] = useState<'first' | 'howto'>('first')
+  const [roundKey, setRoundKey] = useState(0)
 
   const engineRef = useRef<EvalEngine | null>(null)
   const boardRef = useRef<Board | null>(null)
   const predictorRef = useRef<OpponentPredictor | null>(null)
   const moverRef = useRef<LookaheadMover | null>(null)
+  const affinityRef = useRef<Affinity | null>(null)
+  const affinityLoadRef = useRef<Promise<Affinity> | null>(null)
   const humanSideRef = useRef<Cell>(1)
   const thinkingRef = useRef(false)
   const overRef = useRef(false)
+  const demoRef = useRef(false)
+  const turnRef = useRef<Cell>(P1)
   const movesRef = useRef<number[]>([])
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const configRef = useRef<GameConfig>(config)
@@ -57,11 +67,38 @@ export function GameScreen() {
     }
   }, [])
 
+  // Load the persistent opponent memory once; games started before it resolves
+  // fall back to a fresh map (the load is fast, so this is rare).
+  useEffect(() => {
+    affinityLoadRef.current = loadAffinity()
+    void affinityLoadRef.current.then((aff) => {
+      affinityRef.current = aff
+    })
+  }, [])
+
   useEffect(
     () => () => {
       if (timerRef.current) clearTimeout(timerRef.current)
     },
     [],
+  )
+
+  const persistAffinity = useCallback((aff: Affinity) => {
+    void saveAffinity(aff).catch(() => {})
+  }, [])
+
+  // Reward the winner's cells / penalize the loser's, then save the memory so
+  // the AI keeps learning your winning moves across restarts.
+  const endGame = useCallback(
+    (winner: Cell) => {
+      const predictor = predictorRef.current
+      const aff = affinityRef.current
+      if (!predictor || !aff) return
+      const loser: Cell = winner === P1 ? P2 : P1
+      applyResult(aff, winner, loser)
+      persistAffinity(aff)
+    },
+    [persistAffinity],
   )
 
   const runAITurn = useCallback(() => {
@@ -86,6 +123,7 @@ export function GameScreen() {
         const outcome = board.outcome()
         overRef.current = outcome.over
         thinkingRef.current = false
+        if (outcome.over) endGame(outcome.winner)
         setSnap((prev) => ({
           ...prev,
           cells: board.cells.slice(),
@@ -96,6 +134,7 @@ export function GameScreen() {
           thinking: false,
           movesPlayed: movesRef.current.slice(),
           lastAiMove: move,
+          hintIndex: null,
         }))
         setPending(null)
       } catch {
@@ -103,9 +142,62 @@ export function GameScreen() {
         setSnap((prev) => ({ ...prev, thinking: false }))
       }
     }, AI_DELAY_MS)
+  }, [endGame])
+
+  // AI-vs-AI demo: plays the whole game by itself so the core loop can be
+  // recorded/shown. Uses a throwaway predictor (empty memory) so demo games
+  // never pollute the persistent opponent memory, and no win/loss reward.
+  const runDemoTurn = useCallback(() => {
+    const board = boardRef.current
+    const mover = moverRef.current
+    const predictor = predictorRef.current
+    if (!board || !mover || !predictor) return
+    if (overRef.current || !demoRef.current) return
+    const side = turnRef.current
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(async () => {
+      try {
+        const move = await mover.chooseMove(side)
+        if (overRef.current || !demoRef.current) return
+        board.apply(move, side)
+        predictor.record(side, move)
+        movesRef.current.push(move)
+        const outcome = board.outcome()
+        if (outcome.over) {
+          overRef.current = true
+          setSnap((prev) => ({
+            ...prev,
+            cells: board.cells.slice(),
+            winner: outcome.winner,
+            winningLine: outcome.line,
+            over: true,
+            thinking: false,
+            demo: true,
+            movesPlayed: movesRef.current.slice(),
+            lastAiMove: move,
+          }))
+          setPending(null)
+          return
+        }
+        turnRef.current = side === P1 ? P2 : P1
+        setSnap((prev) => ({
+          ...prev,
+          cells: board.cells.slice(),
+          currentPlayer: turnRef.current,
+          thinking: false,
+          demo: true,
+          movesPlayed: movesRef.current.slice(),
+          lastAiMove: move,
+        }))
+        runDemoTurn()
+      } catch {
+        // engine hiccup — stop the demo rather than spin forever
+        demoRef.current = false
+      }
+    }, 700)
   }, [])
 
-  const startGame = useCallback(
+  const startDemo = useCallback(
     (cfg: GameConfig) => {
       const engine = engineRef.current
       if (!engine) {
@@ -115,7 +207,44 @@ export function GameScreen() {
       }
       if (timerRef.current) clearTimeout(timerRef.current)
       const board = new Board(cfg.size)
+      // Fresh, throwaway memory — demos don't teach the AI.
       const predictor = new OpponentPredictor(board, engine)
+      const mover = new LookaheadMover(engine, board, predictor, cfg.difficulty)
+      boardRef.current = board
+      predictorRef.current = predictor
+      moverRef.current = mover
+      humanSideRef.current = cfg.humanSide
+      configRef.current = cfg
+      overRef.current = false
+      thinkingRef.current = false
+      demoRef.current = true
+      turnRef.current = P1
+      movesRef.current = []
+      setConfig(cfg)
+      setEngineError(null)
+      setPending(null)
+      setSnap({ ...emptyState(cfg.size, cfg.humanSide), demo: true })
+      setMenuVisible(false)
+      setRoundKey((k) => k + 1)
+      runDemoTurn()
+    },
+    [runDemoTurn],
+  )
+
+  const startGame = useCallback(
+    async (cfg: GameConfig) => {
+      const engine = engineRef.current
+      if (!engine) {
+        setEngineError(ENGINE_UNAVAILABLE_MSG)
+        setMenuVisible(false)
+        return
+      }
+      if (timerRef.current) clearTimeout(timerRef.current)
+      if (!affinityRef.current) {
+        affinityRef.current = await (affinityLoadRef.current ?? loadAffinity())
+      }
+      const board = new Board(cfg.size)
+      const predictor = new OpponentPredictor(board, engine, 0.9, affinityRef.current)
       const mover = new LookaheadMover(engine, board, predictor, cfg.difficulty)
       predictor.newGame()
       boardRef.current = board
@@ -125,12 +254,14 @@ export function GameScreen() {
       configRef.current = cfg
       overRef.current = false
       thinkingRef.current = false
+      demoRef.current = false
       movesRef.current = []
       setConfig(cfg)
       setEngineError(null)
       setPending(null)
       setSnap(emptyState(cfg.size, cfg.humanSide))
       setMenuVisible(false)
+      setRoundKey((k) => k + 1)
       if (cfg.humanSide === P2) {
         // the AI opens as X
         runAITurn()
@@ -139,11 +270,27 @@ export function GameScreen() {
     [runAITurn],
   )
 
+  // First launch: welcome overlay with an AI-vs-AI demo playing behind it.
+  useEffect(() => {
+    let cancelled = false
+    void getWelcomed().then((welcomed) => {
+      if (cancelled) return
+      if (!welcomed && engineRef.current) {
+        setWelcomeVisible(true)
+        setMenuVisible(false)
+        startDemo({ size: 3, difficulty: 'medium', humanSide: 1 })
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [startDemo])
+
   const clickCell = useCallback(
     (index: number) => {
       const board = boardRef.current
       if (!board) return
-      if (thinkingRef.current || overRef.current) return
+      if (demoRef.current || thinkingRef.current || overRef.current) return
       if (snap.currentPlayer !== humanSideRef.current) return
       if (board.cells[index] !== EMPTY) return
       if (pending != null && !axisCross(pending, board.n).has(index)) return
@@ -156,7 +303,7 @@ export function GameScreen() {
     (index: number) => {
       const board = boardRef.current
       if (!board) return false
-      if (thinkingRef.current || overRef.current) return false
+      if (demoRef.current || thinkingRef.current || overRef.current) return false
       if (snap.currentPlayer !== humanSideRef.current) return false
       if (board.cells[index] !== EMPTY) return false
       if (pending != null && !axisCross(pending, board.n).has(index)) return false
@@ -170,7 +317,7 @@ export function GameScreen() {
     const predictor = predictorRef.current
     if (!board || !predictor) return
     if (pending == null) return
-    if (thinkingRef.current || overRef.current) return
+    if (demoRef.current || thinkingRef.current || overRef.current) return
     if (snap.currentPlayer !== humanSideRef.current) return
     if (board.cells[pending] !== EMPTY) return
     const human = humanSideRef.current
@@ -181,6 +328,7 @@ export function GameScreen() {
     setPending(null)
     if (outcome.over) {
       overRef.current = true
+      endGame(outcome.winner)
       setSnap((prev) => ({
         ...prev,
         cells: board.cells.slice(),
@@ -190,6 +338,7 @@ export function GameScreen() {
         thinking: false,
         movesPlayed: movesRef.current.slice(),
         lastAiMove: null,
+        hintIndex: null,
       }))
       return
     }
@@ -199,11 +348,69 @@ export function GameScreen() {
       currentPlayer: human === P1 ? P2 : P1,
       movesPlayed: movesRef.current.slice(),
       lastAiMove: null,
+      hintIndex: null,
     }))
     runAITurn()
-  }, [pending, snap.currentPlayer, runAITurn])
+  }, [pending, snap.currentPlayer, runAITurn, endGame])
 
   const cancelPending = useCallback(() => setPending(null), [])
+
+  // Take back the last human move (and the AI reply that followed it), so the
+  // player can re-think. Works from mid-game and from the finished screen.
+  const undoMove = useCallback(() => {
+    const board = boardRef.current
+    if (!board) return
+    if (demoRef.current || thinkingRef.current) return
+    const hist = movesRef.current
+    if (hist.length === 0) return
+    const human = humanSideRef.current
+    let lastHuman = -1
+    for (let i = hist.length - 1; i >= 0; i--) {
+      // plies alternate strictly: ply 0 is P1, ply 1 is P2, …
+      const owner: Cell = i % 2 === 0 ? P1 : P2
+      if (owner === human) {
+        lastHuman = i
+        break
+      }
+    }
+    if (lastHuman < 0) return
+    for (const m of hist.slice(lastHuman)) board.cells[m] = EMPTY
+    movesRef.current = hist.slice(0, lastHuman)
+    if (timerRef.current) clearTimeout(timerRef.current)
+    overRef.current = false
+    thinkingRef.current = false
+    setPending(null)
+    setSnap((prev) => ({
+      ...prev,
+      cells: board.cells.slice(),
+      currentPlayer: human,
+      winner: EMPTY,
+      winningLine: null,
+      over: false,
+      thinking: false,
+      movesPlayed: movesRef.current.slice(),
+      lastAiMove: null,
+      hintIndex: null,
+      demo: false,
+    }))
+  }, [])
+
+  // Recommend the model's best move for the human and pre-select it.
+  const showHint = useCallback(async () => {
+    const mover = moverRef.current
+    if (!mover) return
+    if (demoRef.current || thinkingRef.current || overRef.current) return
+    const human = humanSideRef.current
+    try {
+      const hint = await mover.getHint(human)
+      if (hint < 0) return
+      if (demoRef.current || overRef.current) return
+      setPending(hint)
+      setSnap((prev) => ({ ...prev, hintIndex: hint }))
+    } catch {
+      // ignore
+    }
+  }, [])
 
   const playAgain = useCallback(() => startGame(configRef.current), [startGame])
 
@@ -211,7 +418,25 @@ export function GameScreen() {
 
   const openMenu = useCallback(() => setMenuVisible(true), [])
 
-  const isHumanTurn = !snap.over && !snap.thinking && snap.currentPlayer === config.humanSide
+// "How to play" from the menu: run a live AI-vs-AI demo behind the guide
+// overlay so the animation literally shows how a game (and a win) works.
+const showHowTo = useCallback(
+  (cfg: GameConfig) => {
+    setWelcomeMode('howto')
+    setWelcomeVisible(true)
+    startDemo(cfg)
+  },
+  [startDemo],
+)
+
+  const dismissWelcome = useCallback(() => {
+    setWelcomeVisible(false)
+    void setWelcomed()
+    setMenuVisible(true)
+  }, [])
+
+  const isHumanTurn =
+    !snap.demo && !snap.over && !snap.thinking && snap.currentPlayer === config.humanSide
   const humanMark = config.humanSide === P1 ? 'X' : 'O'
 
   return (
@@ -224,8 +449,10 @@ export function GameScreen() {
           pendingIndex={pending}
           winningLine={snap.winningLine}
           lastAiMove={snap.lastAiMove}
+          hintIndex={snap.hintIndex}
           thinking={snap.thinking}
           interactive={interactive}
+          startKey={roundKey}
         />
 
         {engineError != null && (
@@ -235,13 +462,18 @@ export function GameScreen() {
         )}
       </View>
 
-      <View style={styles.bottom}>
-        <StatusBar state={snap} humanSide={config.humanSide} onPlayAgain={playAgain} />
-
-        <Pressable onPress={openMenu} style={styles.newGameBtn}>
-          <Text style={styles.newGameBtnText}>New game</Text>
-        </Pressable>
-      </View>
+      {!snap.demo && (
+        <View style={styles.bottom}>
+          <StatusBar
+            state={snap}
+            humanSide={config.humanSide}
+            onPlayAgain={playAgain}
+            onNewGame={openMenu}
+            onHint={showHint}
+            onUndo={undoMove}
+          />
+        </View>
+      )}
 
       {pending != null && isHumanTurn && (
         <View style={styles.actionBar}>
@@ -254,7 +486,14 @@ export function GameScreen() {
         </View>
       )}
 
-      <MenuSheet visible={menuVisible} onStart={handleStart} />
+      <MenuSheet visible={menuVisible} onStart={handleStart} onHowTo={showHowTo} />
+
+      {welcomeVisible && (
+        <WelcomeOverlay
+          onStart={dismissWelcome}
+          buttonLabel={welcomeMode === 'howto' ? 'Got it' : 'Start playing'}
+        />
+      )}
     </View>
   )
 }
@@ -289,27 +528,13 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   bottom: {
-    borderTopWidth: 1,
-    borderTopColor: Theme.border,
-  },
-  newGameBtn: {
-    marginHorizontal: spacing(4),
-    marginBottom: spacing(3),
-    paddingVertical: spacing(1.5),
-    alignItems: 'center',
-  },
-  newGameBtnText: {
-    color: Theme.muted,
-    fontSize: fontSize(12),
-    fontWeight: '600',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
+    // StatusBar draws its own top border.
   },
   actionBar: {
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: spacing(10),
+    bottom: spacing(15),
     flexDirection: 'row',
     gap: spacing(3),
     paddingHorizontal: spacing(4),

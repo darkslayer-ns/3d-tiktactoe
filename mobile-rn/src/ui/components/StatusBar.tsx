@@ -13,13 +13,23 @@ interface StatusBarProps {
   state: GameState
   humanSide: Cell
   onPlayAgain: () => void
+  onNewGame?: () => void
+  onHint?: () => void
+  onUndo?: () => void
 }
 
 function markOf(player: Cell): string {
   return player === P1 ? 'X' : 'O'
 }
 
-export function StatusBar({ state, humanSide, onPlayAgain }: StatusBarProps) {
+export function StatusBar({
+  state,
+  humanSide,
+  onPlayAgain,
+  onNewGame,
+  onHint,
+  onUndo,
+}: StatusBarProps) {
   const pulse = useRef(new Animated.Value(1)).current
 
   useEffect(() => {
@@ -59,6 +69,11 @@ export function StatusBar({ state, humanSide, onPlayAgain }: StatusBarProps) {
         <Pressable onPress={onPlayAgain} style={styles.playAgain}>
           <Text style={styles.playAgainText}>Play again</Text>
         </Pressable>
+        {onUndo != null && (
+          <Pressable onPress={onUndo} style={styles.newGame}>
+            <Text style={styles.newGameText}>Undo</Text>
+          </Pressable>
+        )}
       </View>
     )
   }
@@ -72,6 +87,23 @@ export function StatusBar({ state, humanSide, onPlayAgain }: StatusBarProps) {
       <Text style={[styles.text, { color: accent }]}>
         {isHumanTurn ? 'Your turn' : "Opponent's turn"}
       </Text>
+      <View style={styles.actions}>
+        {isHumanTurn && onHint != null && (
+          <Pressable onPress={onHint} style={styles.hint}>
+            <Text style={styles.hintText}>Hint</Text>
+          </Pressable>
+        )}
+        {!state.thinking && onUndo != null && (
+          <Pressable onPress={onUndo} style={styles.newGame}>
+            <Text style={styles.newGameText}>Undo</Text>
+          </Pressable>
+        )}
+        {onNewGame != null && (
+          <Pressable onPress={onNewGame} style={styles.newGame}>
+            <Text style={styles.newGameText}>New game</Text>
+          </Pressable>
+        )}
+      </View>
     </View>
   )
 }
@@ -118,5 +150,39 @@ const styles = StyleSheet.create({
     color: Theme.cyan,
     fontSize: fontSize(13),
     fontWeight: '700',
+  },
+  newGame: {
+    paddingVertical: spacing(1.5),
+    paddingHorizontal: spacing(3),
+    borderRadius: radius(2),
+    borderWidth: 1,
+    borderColor: Theme.border,
+  },
+  newGameText: {
+    color: Theme.muted,
+    fontSize: fontSize(12),
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  hint: {
+    paddingVertical: spacing(1.5),
+    paddingHorizontal: spacing(3),
+    borderRadius: radius(2),
+    borderWidth: 1,
+    borderColor: 'rgba(34, 211, 238, 0.45)',
+    backgroundColor: 'rgba(34, 211, 238, 0.1)',
+  },
+  hintText: {
+    color: Theme.cyan,
+    fontSize: fontSize(12),
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  actions: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    gap: spacing(2),
   },
 })

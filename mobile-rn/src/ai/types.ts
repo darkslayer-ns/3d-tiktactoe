@@ -18,6 +18,16 @@ export interface EvalResult {
  */
 export interface EvalEngine {
   evalPosition(cells: readonly Cell[], player: Cell, n?: number): EvalResult
+  /**
+   * Optional batched forward: evaluate several boards (all the same `n`) in
+   * one native call, computed in parallel. `boards`/`masks` are flat
+   * concatenated n^3 slices. When absent, callers fall back to evalPosition.
+   */
+  evalPositions?(
+    boards: readonly number[],
+    masks: readonly number[],
+    n: number,
+  ): { values: number[]; policies: number[] }
 }
 
 export interface GameConfig {
@@ -62,6 +72,10 @@ export interface GameState {
   movesPlayed: number[]
   /** Index of the AI's most recent move, for a "just played" highlight. */
   lastAiMove: number | null
+  /** Cell recommended by the Hint button (pulses cyan). */
+  hintIndex: number | null
+  /** True while an AI-vs-AI demo is running (no human input). */
+  demo?: boolean
 }
 
 export function emptyState(size: number, _humanSide: Cell): GameState {
@@ -75,5 +89,7 @@ export function emptyState(size: number, _humanSide: Cell): GameState {
     thinking: false,
     movesPlayed: [],
     lastAiMove: null,
+    hintIndex: null,
+    demo: false,
   }
 }

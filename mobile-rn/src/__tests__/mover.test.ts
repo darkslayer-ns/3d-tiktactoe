@@ -5,11 +5,12 @@
 import { Board, P1, P2 } from '../game/board'
 import { EMPTY } from '../game/types'
 import type { Cell } from '../game/types'
-import type { EvalEngine } from '../ai/types'
+import type { Difficulty, EvalEngine } from '../ai/types'
 import { LookaheadMover } from '../ai/mover'
 import { OpponentPredictor } from '../ai/predictor'
 import { createMockEngine } from '../ai/engine'
 import { scriptedRng } from './rng-helper'
+import type { Rng } from '../ai/math'
 
 /**
  * A mock engine that always prefers the first EMPTY cell. Guarantees the
@@ -33,6 +34,33 @@ describe('LookaheadMover', () => {
     const engine = legalEngine()
     const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
     expect(await mover.chooseMove(P1)).toBe(b.idx(2, 0, 0))
+  })
+
+  it('getHint returns the immediate winning cell', async () => {
+    const b = new Board(3)
+    b.apply(b.idx(0, 0, 0), P1)
+    b.apply(b.idx(1, 0, 0), P1)
+    const engine = legalEngine()
+    const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
+    expect(await mover.getHint(P1)).toBe(b.idx(2, 0, 0))
+  })
+
+  it('getHint blocks an immediate threat for the human', async () => {
+    const b = new Board(3)
+    b.apply(b.idx(0, 0, 0), P2)
+    b.apply(b.idx(1, 0, 0), P2)
+    const engine = legalEngine()
+    const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
+    expect(await mover.getHint(P1)).toBe(b.idx(2, 0, 0))
+  })
+
+  it('getHint returns a legal empty move on a fresh board', async () => {
+    const b = new Board(3)
+    const engine = legalEngine()
+    const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
+    const hint = await mover.getHint(P1)
+    expect(hint).toBeGreaterThanOrEqual(0)
+    expect(b.cells[hint]).toBe(EMPTY)
   })
 
   it('blocks an immediate loss', async () => {
@@ -97,5 +125,74 @@ describe('LookaheadMover', () => {
     const engine = legalEngine()
     const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
     expect(await mover.chooseMove(P1)).toBe(-1)
+  })
+
+  it('batched (evalPositions) picks the same moves as sequential evalPosition', async () => {
+    // Deterministic LCG so both movers consume identical RNG draws.
+    const lcg = (seed: number): Rng => {
+      let s = seed >>> 0
+      const next = () => {
+        s = (s * 1664525 + 1013904223) >>> 0
+        return s / 4294967296
+      }
+      return { random: next, choice: (arr) => arr[Math.floor(next() * arr.length)] }
+    }
+    // Raw net: value logit = sum of empties, policy favors low empty indices.
+    const rawFn = (_norm: number[], mask: number[], n: number): { value: number; policy: number[] } => {
+      const N = n ** 3
+      const empties = mask.reduce((a, b) => a + (b ? 1 : 0), 0)
+      const policy = new Array<number>(N).fill(-5)
+      for (let i = 0; i < N; i++) {
+        if (mask[i]) {
+          policy[i] = i < empties ? 1.0 : 0.5
+        }
+      }
+      return { value: empties * 0.1, policy }
+    }
+
+    const sequential: EvalEngine = {
+      evalPosition(cells, player, n) {
+        const size = n ?? Math.round(Math.cbrt(cells.length))
+        const norm = new Array<number>(size ** 3)
+        const mask = new Array<number>(size ** 3)
+        for (let i = 0; i < cells.length; i++) {
+          const c = cells[i]
+          norm[i] = c === 0 ? 0 : c === player ? 1 : 2
+          mask[i] = c === 0 ? 1 : 0
+        }
+        return rawFn(norm, mask, size)
+      },
+    }
+    const batched: EvalEngine = {
+      evalPosition: sequential.evalPosition,
+      evalPositions(boards, masks, n) {
+        const values: number[] = []
+        const policies: number[] = []
+        const N = n ** 3
+        for (let i = 0; i < boards.length; i += N) {
+          const r = rawFn(
+            boards.slice(i, i + N) as number[],
+            masks.slice(i, i + N) as number[],
+            n,
+          )
+          values.push(r.value)
+          policies.push(...r.policy)
+        }
+        return { values, policies }
+      },
+    }
+
+    const positions: Array<[Cell[], Difficulty]> = [
+      [new Array<Cell>(27).fill(0), 'easy'],
+      [new Array<Cell>(27).fill(0), 'medium'],
+      [new Array<Cell>(27).fill(0), 'hard'],
+    ]
+    for (const [cells, difficulty] of positions) {
+      const b1 = new Board(3, cells)
+      const b2 = new Board(3, cells)
+      const m1 = new LookaheadMover(sequential, b1, new OpponentPredictor(b1, sequential), difficulty, lcg(1234))
+      const m2 = new LookaheadMover(batched, b2, new OpponentPredictor(b2, batched), difficulty, lcg(1234))
+      expect(await m2.chooseMove(P1)).toBe(await m1.chooseMove(P1))
+    }
   })
 })

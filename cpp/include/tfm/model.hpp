@@ -36,6 +36,13 @@ struct Model {
   void forward(const int* board, const uint8_t* mask, int n,
                float& value, float* policy) const;
 
+  // Forward over `count` positions at once (parallel search). boards/masks are
+  // `count * n^3` contiguous values. Each board is computed with the identical
+  // scalar `forward`, spread across worker threads, so results are bit-exact
+  // to N single-position calls.
+  void forwardBatch(int n, int count, const int* boards, const uint8_t* masks,
+                    float* values, float* policies) const;
+
   int numel() const;  // total parameter count (sanity check)
 };
 

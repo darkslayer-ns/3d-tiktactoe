@@ -11,6 +11,7 @@ describe('line counts', () => {
     [3, 49],
     [4, 76],
     [5, 109],
+    [6, 148],
   ])('n=%i has %i lines', (n, expected) => {
     expect(lineCount(n)).toBe(expected)
     expect(buildLines(n)).toHaveLength(expected)

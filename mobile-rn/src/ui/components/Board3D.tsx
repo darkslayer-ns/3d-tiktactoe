@@ -202,21 +202,26 @@ interface SlotProps {
 
 function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPointerDown, onClick }: SlotProps) {
   const edgeMat = useRef<THREE.LineBasicMaterial>(null)
+  const posV = useMemo(() => new THREE.Vector3(position[0], position[1], position[2]), [position])
 
   useFrame((state) => {
     const e = edgeMat.current
     if (!e) return
     const t = state.clock.elapsedTime
+    // Depth fade: cells farther from the camera go fainter (atmospheric).
+    const camDist = state.camera.position.length() || 1
+    const depth = state.camera.position.distanceTo(posV) / camDist
+    const fade = clamp(1.9 - depth, 0.15, 1)
     if (pulse) {
-      e.color.set('#0ea5e9')
-      e.opacity = 0.5 + 0.2 * Math.sin(t * 6)
+      e.color.set('#0284c7')
+      e.opacity = (0.4 + 0.15 * Math.sin(t * 6)) * fade
     } else if (thinking) {
       // Opponent computing: the borders breathe (no text UI).
-      e.color.set('#0ea5e9')
-      e.opacity = 0.28 + 0.2 * (0.5 + 0.5 * Math.sin(t * 4))
+      e.color.set('#0284c7')
+      e.opacity = (0.2 + 0.15 * (0.5 + 0.5 * Math.sin(t * 4))) * fade
     } else {
-      e.color.set(dim ? '#0c4a6e' : '#0ea5e9')
-      e.opacity = dim ? 0.2 : 0.45
+      e.color.set(dim ? '#0a3a5c' : '#0284c7')
+      e.opacity = (dim ? 0.12 : 0.3) * fade
     }
   })
 
@@ -233,7 +238,7 @@ function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPo
       </mesh>
       {/* glowing cyan border */}
       <lineSegments geometry={slotEdgesGeometry} raycast={() => null}>
-        <lineBasicMaterial ref={edgeMat} color="#0ea5e9" transparent opacity={0.45} />
+        <lineBasicMaterial ref={edgeMat} color="#0284c7" transparent opacity={0.3} />
       </lineSegments>
     </group>
   )
@@ -428,15 +433,20 @@ export function Board3D({
   thinking,
   interactive,
 }: Board3DProps) {
-  // Spherical orbit target, written by the pan gesture, read by OrbitRig.
+  // Spherical orbit target, written by the gestures, read by OrbitRig.
   const target = useRef<OrbitTarget>(defaultOrbitTarget(size))
+  const userZoomed = useRef(false)
   const panStart = useRef<{ theta: number; phi: number }>({ theta: 0, phi: 0 })
+  const pinchStartDist = useRef(0)
   // Pointer-down position for the manual 10px click threshold (web parity).
   const downRef = useRef<{ x: number; y: number } | null>(null)
 
-  // Refit the whole cube when the board size changes.
+  // Fit the whole cube only until the user zooms in — after that their zoom
+  // level is kept, so the view never jumps.
   useEffect(() => {
-    target.current.distance = fitDistance(size)
+    if (!userZoomed.current) {
+      target.current.distance = fitDistance(size)
+    }
   }, [size])
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>) => {
@@ -471,7 +481,25 @@ export function Board3D({
     [],
   )
 
-  const composed = useMemo(() => pan, [pan])
+  const pinch = useMemo(
+    () =>
+      Gesture.Pinch()
+        .onStart(() => {
+          pinchStartDist.current = target.current.distance
+        })
+        .onUpdate((e) => {
+          if (e.scale <= 0.01) return
+          userZoomed.current = true
+          target.current.distance = clamp(
+            pinchStartDist.current / e.scale,
+            MIN_DISTANCE,
+            MAX_DISTANCE,
+          )
+        }),
+    [],
+  )
+
+  const composed = useMemo(() => Gesture.Simultaneous(pan, pinch), [pan, pinch])
 
   return (
     <GestureDetector gesture={composed}>

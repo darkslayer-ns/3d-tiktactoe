@@ -20,19 +20,28 @@ function markOf(player: Cell): string {
 }
 
 export function StatusBar({ state, humanSide, onPlayAgain }: StatusBarProps) {
-  const opacity = useRef(new Animated.Value(1)).current
+  const pulse = useRef(new Animated.Value(1)).current
 
   useEffect(() => {
     if (!state.thinking) return
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(opacity, { toValue: 0.25, duration: 320, useNativeDriver: true }),
-        Animated.timing(opacity, { toValue: 1, duration: 320, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0.35, duration: 380, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 380, useNativeDriver: true }),
       ]),
     )
     loop.start()
     return () => loop.stop()
-  }, [state.thinking, opacity])
+  }, [state.thinking, pulse])
+
+  const renderMark = (player: Cell, animating = false) => {
+    const accent = player === P1 ? Theme.cyan : Theme.pink
+    return (
+      <Animated.View style={[styles.badge, { borderColor: accent, opacity: animating ? pulse : 1 }]}>
+        <Text style={[styles.badgeText, { color: accent }]}>{markOf(player)}</Text>
+      </Animated.View>
+    )
+  }
 
   if (state.over) {
     const result =
@@ -41,25 +50,15 @@ export function StatusBar({ state, humanSide, onPlayAgain }: StatusBarProps) {
         : state.winner === humanSide
           ? 'You win!'
           : 'ISOCUBE wins'
-    const accent = state.winner === EMPTY ? Theme.muted : Theme.cyan
+    const accent = state.winner === EMPTY ? Theme.muted : state.winner === humanSide ? Theme.cyan : Theme.pink
+    const winnerMark = state.winner === EMPTY ? null : state.winner
     return (
       <View style={styles.bar}>
-        <View style={[styles.dot, { backgroundColor: accent, shadowColor: accent }]} />
+        {winnerMark ? renderMark(winnerMark) : <View style={[styles.badge, { borderColor: Theme.muted }]}><Text style={[styles.badgeText, { color: Theme.muted }]}>–</Text></View>}
         <Text style={[styles.text, { color: accent }]}>{result}</Text>
         <Pressable onPress={onPlayAgain} style={styles.playAgain}>
           <Text style={styles.playAgainText}>Play again</Text>
         </Pressable>
-      </View>
-    )
-  }
-
-  if (state.thinking) {
-    return (
-      <View style={styles.bar}>
-        <Animated.View
-          style={[styles.dot, { backgroundColor: Theme.pink, shadowColor: Theme.pink, opacity }]}
-        />
-        <Text style={[styles.text, { color: Theme.pink }]}>Opponent's turn</Text>
       </View>
     )
   }
@@ -69,9 +68,9 @@ export function StatusBar({ state, humanSide, onPlayAgain }: StatusBarProps) {
   const accent = player === P1 ? Theme.cyan : Theme.pink
   return (
     <View style={styles.bar}>
-      <View style={[styles.dot, { backgroundColor: accent, shadowColor: accent }]} />
+      {renderMark(player, state.thinking)}
       <Text style={[styles.text, { color: accent }]}>
-        {isHumanTurn ? 'Your turn' : "AI's turn"} · {markOf(player)}
+        {isHumanTurn ? 'Your turn' : "Opponent's turn"}
       </Text>
     </View>
   )
@@ -81,20 +80,24 @@ const styles = StyleSheet.create({
   bar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing(2),
+    gap: spacing(3),
     height: spacing(13),
     paddingHorizontal: spacing(4),
     backgroundColor: 'rgba(2, 6, 23, 0.85)',
     borderTopWidth: 1,
     borderTopColor: Theme.border,
   },
-  dot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 6,
+  badge: {
+    width: 26,
+    height: 26,
+    borderRadius: radius(2),
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeText: {
+    fontSize: fontSize(14),
+    fontWeight: '800',
   },
   text: {
     color: Theme.text,

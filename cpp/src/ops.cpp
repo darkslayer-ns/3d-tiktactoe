@@ -3,7 +3,9 @@
 #include <cmath>
 #include <cstddef>
 
-#if defined(__APPLE__)
+#if defined(TFM_USE_EIGEN)
+#include <Eigen/Dense>
+#elif defined(__APPLE__)
 // Use the modern Accelerate BLAS interface (macOS 13.3+ / iOS 16.4+). Without
 // ACCELERATE_LAPACK_ILP64 this keeps 32-bit integer dimensions, so the
 // cblas_sgemm signature is unchanged — only the deprecated classic entry
@@ -14,61 +16,132 @@
 
 namespace tfm {
 
+namespace {
+
+/**
+ * Row-major GEMM: C(M×N) = scale · A(M×K)·op(B) + bias, where
+ *   op(B) = Bᵀ  if transB  (B stored N×K), else B (B stored K×N).
+ *
+ *   - Apple  → Accelerate cblas_sgemm (BLAS, multi-threaded)
+ *   - Eigen  → Eigen Map product (SIMD, cross-platform; used on Android)
+ *   - else   → portable scalar loop
+ *
+ * lda/ldb/ldc are the row strides, so head slices of a packed matrix (stride
+ * = full d) can be GEMM'd in place without copying. bias may be nullptr.
+ * BLAS/Eigen accumulation order differs from the scalar path by ~1e-6 — well
+ * inside the 1e-3 parity tolerance.
+ */
+void gemm(const float* A, const float* B, const float* bias,
+          int M, int K, int N, int lda, int ldb, int ldc, float* C, float scale,
+          bool transB) {
+#if defined(TFM_USE_EIGEN)
+  using EM = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+  using S = Eigen::Stride<Eigen::Dynamic, 1>;
+  Eigen::Map<const EM, 0, S> Am(A, M, K, S(lda, 1));
+  Eigen::Map<EM, 0, S> Cm(C, M, N, S(ldc, 1));
+  if (transB) {
+    Eigen::Map<const EM, 0, S> Bm(B, N, K, S(ldb, 1));
+    Cm = (Am * Bm.transpose()) * scale;
+  } else {
+    Eigen::Map<const EM, 0, S> Bm(B, K, N, S(ldb, 1));
+    Cm = (Am * Bm) * scale;
+  }
+  if (bias) {
+    for (int i = 0; i < M; ++i)
+      for (int j = 0; j < N; ++j) C[(size_t)i * ldc + j] += bias[j];
+  }
+#elif defined(__APPLE__)
+  if (bias) {
+    for (int i = 0; i < M; ++i)
+      for (int j = 0; j < N; ++j) C[(size_t)i * ldc + j] = bias[j];
+  } else {
+    for (int i = 0; i < M; ++i)
+      for (int j = 0; j < N; ++j) C[(size_t)i * ldc + j] = 0.0f;
+  }
+  if (M > 0 && N > 0 && K > 0) {
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, transB ? CblasTrans : CblasNoTrans,
+                M, N, K, scale, A, lda, B, ldb, 1.0f, C, ldc);
+  }
+#else
+  for (int i = 0; i < M; ++i) {
+    const float* ai = A + (size_t)i * lda;
+    for (int j = 0; j < N; ++j) {
+      float acc = bias ? bias[j] : 0.0f;
+      if (transB) {
+        const float* bj = B + (size_t)j * ldb;
+        for (int k = 0; k < K; ++k) acc += ai[k] * bj[k];
+      } else {
+        for (int k = 0; k < K; ++k) acc += ai[k] * B[(size_t)k * ldb + j];
+      }
+      C[(size_t)i * ldc + j] = acc * scale;
+    }
+  }
+#endif
+}
+
+}  // namespace
+
 void linear(const Mat& x, const Mat& W, const Vec& b, Mat& y) {
   const int M = x.R, K = x.C, N = W.R;
   y = Mat(M, N);
-#if defined(__APPLE__)
-  // Accelerate GEMM: y(M×N) = x(M×K) * Wᵀ(K×N) + bias. Row-major, W stored
-  // N×K so it feeds the transposed operand directly. BLAS accumulation order
-  // differs from the scalar loop by ~1e-6 — comfortably inside the 1e-3
-  // parity tolerance. Falls through to the scalar path for empty matrices.
-  if (M > 0 && N > 0 && K > 0) {
-    float* yd = y.d.data();
-    for (int i = 0; i < M; ++i)
-      for (int j = 0; j < N; ++j) yd[(size_t)i * N + j] = b[j];
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, M, N, K, 1.0f,
-                x.d.data(), K, W.d.data(), K, 1.0f, yd, N);
-    return;
-  }
-#endif
-  for (int i = 0; i < M; ++i) {
-    const float* xi = x.row(i);
-    for (int j = 0; j < N; ++j) {
-      const float* wj = W.row(j);
-      float acc = b[j];
-      for (int k = 0; k < K; ++k) acc += xi[k] * wj[k];
-      y.at(i, j) = acc;
-    }
-  }
+  gemm(x.d.data(), W.d.data(), b.data(), M, K, N, K, K, N, y.d.data(), 1.0f, true);
 }
 
 void linearSlice(const Mat& x, const Mat& W, const Vec& b,
                  int slice_off, int len, Mat& y) {
   const int M = x.R, K = x.C;
   y = Mat(M, len);
-  for (int i = 0; i < M; ++i) {
-    const float* xi = x.row(i);
-    for (int j = 0; j < len; ++j) {
-      const float* wj = W.row(slice_off + j);
-      float acc = b[slice_off + j];
-      for (int k = 0; k < K; ++k) acc += xi[k] * wj[k];
-      y.at(i, j) = acc;
-    }
-  }
+  gemm(x.d.data(), W.d.data() + (size_t)slice_off * K, b.data() + slice_off,
+       M, K, len, K, K, len, y.d.data(), 1.0f, true);
 }
 
 void relu(Mat& x) {
   for (float& v : x.d) v = v > 0.0f ? v : 0.0f;
 }
 
+// Abramowitz & Stegun 7.1.26 — max abs error 1.5e-7, inlinable and
+// branch-free, so the compiler auto-vectorizes it (std::erf is an opaque
+// libm call). Well inside the 1e-3 parity tolerance vs torch's exact erf.
+static inline float erfPoly(float x) {
+  const float a1 = 0.254829592f, a2 = -0.284496736f, a3 = 1.421413741f;
+  const float a4 = -1.453152027f, a5 = 1.061405429f, p = 0.3275911f;
+  const float sign = x < 0.0f ? -1.0f : 1.0f;
+  x = std::fabs(x);
+  const float t = 1.0f / (1.0f + p * x);
+  const float poly = ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t;
+  return sign * (1.0f - poly * std::exp(-x * x));
+}
+
 void geluExact(Mat& x) {
   const float inv_sqrt2 = 0.70710678118654752440f;  // 1/sqrt(2)
   for (float& v : x.d) {
-    v = v * 0.5f * (1.0f + std::erf(v * inv_sqrt2));
+    v = v * 0.5f * (1.0f + erfPoly(v * inv_sqrt2));
   }
 }
 
 void softmaxRows(Mat& x) {
+#if defined(TFM_USE_EIGEN)
+  using EM = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+  Eigen::Map<EM> X(x.d.data(), x.R, x.C);
+  Eigen::Matrix<float, Eigen::Dynamic, 1> mx = X.rowwise().maxCoeff();
+  for (int i = 0; i < x.R; ++i) X.row(i).array() -= mx(i);
+  X = X.array().exp().matrix();
+  Eigen::Matrix<float, Eigen::Dynamic, 1> rs = X.rowwise().sum();
+  for (int i = 0; i < x.R; ++i) X.row(i).array() /= rs(i);
+#elif defined(__APPLE__)
+  for (int i = 0; i < x.R; ++i) {
+    float* row = x.row(i);
+    const int len = x.C;
+    float m = row[0];
+    for (int j = 1; j < len; ++j) m = std::max(m, row[j]);
+    for (int j = 0; j < len; ++j) row[j] -= m;
+    vvexpf(row, row, &len);  // SIMD exp (in-place)
+    double sum = 0.0;
+    for (int j = 0; j < len; ++j) sum += row[j];
+    const float inv = (float)(1.0 / sum);
+    for (int j = 0; j < len; ++j) row[j] *= inv;
+  }
+#else
   for (int i = 0; i < x.R; ++i) {
     float* row = x.row(i);
     float m = row[0];
@@ -80,6 +153,7 @@ void softmaxRows(Mat& x) {
     }
     for (int j = 0; j < x.C; ++j) row[j] = (float)((double)row[j] / sum);
   }
+#endif
 }
 
 void layerNorm(const Mat& x, const Vec& g, const Vec& b, float eps, Mat& y) {
@@ -126,26 +200,13 @@ void attention(const Mat& x, int nhead, float scale,
   Mat scores(N, N), o(N, d, 0.0f);
   for (int h = 0; h < nhead; ++h) {
     const int base = h * hd;
-    // scores[i][j] = scale * sum_l q[i][base+l] * k[j][base+l]
-    for (int i = 0; i < N; ++i) {
-      const float* qi = q.row(i);
-      for (int j = 0; j < N; ++j) {
-        const float* kj = k.row(j);
-        float acc = 0.0f;
-        for (int l = 0; l < hd; ++l) acc += qi[base + l] * kj[base + l];
-        scores.at(i, j) = acc * scale;
-      }
-    }
+    // scores = scale · Q_h · K_hᵀ   (head slice: lda/ldb = full d)
+    gemm(q.d.data() + base, k.d.data() + base, nullptr, N, hd, N, d, d, N,
+         scores.d.data(), scale, true);
     softmaxRows(scores);
-    for (int i = 0; i < N; ++i) {
-      const float* si = scores.row(i);
-      float* oi = o.row(i);
-      for (int m = 0; m < hd; ++m) {
-        float acc = 0.0f;
-        for (int j = 0; j < N; ++j) acc += si[j] * v.at(j, base + m);
-        oi[base + m] = acc;
-      }
-    }
+    // o_h = P_h · V_h   (V_h stored K×N: K=N tokens, N=hd, stride d)
+    gemm(scores.d.data(), v.d.data() + base, nullptr, N, N, hd, N, d, d,
+         o.d.data() + base, 1.0f, false);
   }
   linear(o, outProjW, outProjB, out);
 }

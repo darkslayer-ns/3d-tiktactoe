@@ -19,7 +19,7 @@ SHELL := /bin/bash
 ROOT  := $(CURDIR)
 NCPU  := $(shell nproc 2>/dev/null || echo 4)
 
-MODEL_PT  := $(ROOT)/model_universal.pt
+MODEL_PT  := $(ROOT)/dev/model_universal.pt
 MODEL_BIN := $(ROOT)/cpp/model.bin
 CPP_BUILD := $(ROOT)/cpp/build
 CPP_SRCS  := $(wildcard cpp/src/*.cpp)
@@ -69,7 +69,7 @@ parity: cpp
 # ---------------------------------------------------------------------------
 
 frontend:
-	cd frontend && npm install --no-audit --no-fund && npm run build
+	cd dev/frontend && npm install --no-audit --no-fund && npm run build
 
 # ---------------------------------------------------------------------------
 # Mobile (React Native)
@@ -121,7 +121,7 @@ android-debug: mobile-prebuild embed
 # ---------------------------------------------------------------------------
 
 backend-test:
-	python3 -m pytest backend/tests -q
+	cd dev && python3 -m pytest backend/tests -q
 
 test: parity backend-test mobile-test
 	@echo
@@ -132,10 +132,10 @@ test: parity backend-test mobile-test
 # ---------------------------------------------------------------------------
 
 run-backend:
-	bash scripts/dev.sh backend
+	cd dev && bash scripts/dev.sh backend
 
 run-frontend:
-	bash scripts/dev.sh frontend
+	cd dev && bash scripts/dev.sh frontend
 
 # ---------------------------------------------------------------------------
 # Clean
@@ -143,6 +143,6 @@ run-frontend:
 
 clean:
 	rm -rf $(CPP_BUILD) cpp/fixtures
-	cd frontend && rm -rf dist
+	cd dev/frontend && rm -rf dist
 	cd mobile-rn && rm -rf dist
 	@echo "cleaned build artifacts (kept cpp/model.bin and generated headers)"

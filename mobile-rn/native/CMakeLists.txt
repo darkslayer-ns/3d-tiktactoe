@@ -105,4 +105,15 @@ endif()
 # SAME prefab copies — avoiding duplicate TurboModule.h redefinitions.
 if(ANDROID)
   target_link_libraries(tfm_engine PUBLIC jsi reactnative fbjni)
+
+  # Eigen (header-only) accelerates the transformer's GEMMs on Android
+  # (Apple uses the system Accelerate BLAS instead). Fetched once at configure
+  # time and cached; TFM_USE_EIGEN selects the Eigen path in cpp/src/ops.cpp.
+  include(FetchContent)
+  FetchContent_Declare(eigen3
+    URL https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(eigen3)
+  target_include_directories(tfm_engine PRIVATE "${eigen3_SOURCE_DIR}")
+  target_compile_definitions(tfm_engine PRIVATE TFM_USE_EIGEN)
 endif()

@@ -22,6 +22,12 @@ set_target_properties(tfm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(tfm STATIC $<TARGET_OBJECTS:tfm_core>)
 target_include_directories(tfm PUBLIC include)
 
+# Apple: link Accelerate (BLAS) — used by ops.cpp under __APPLE__. Elsewhere the
+# scalar fallback is used (or Eigen when TFM_USE_EIGEN is defined externally).
+if(APPLE)
+  target_link_libraries(tfm PUBLIC "-framework Accelerate")
+endif()
+
 add_library(model SHARED $<TARGET_OBJECTS:tfm_core> src/c_api.cpp)
 target_include_directories(model PUBLIC include)
 set_target_properties(model PROPERTIES OUTPUT_NAME model)

@@ -23,7 +23,9 @@ import { createNativeEngine } from '../../ai/engine'
 import { OpponentPredictor } from '../../ai/predictor'
 import { LookaheadMover } from '../../ai/mover'
 import { applyResult, type Affinity } from '../../ai/opponentMemory'
-import { loadAffinity, saveAffinity, getWelcomed, setWelcomed } from '../../ai/opponentStorage'
+import { loadAffinity, saveAffinity, getWelcomed, setWelcomed, loadProfile, saveProfile, loadStats, saveStats, loadPerception, savePerception } from '../../ai/opponentStorage'
+import { analyzeMove, PerceptionProfile, PlayerProfile } from '../../ai/profile'
+import { adaptiveLevel, emptyStats, recordResult, type GameStats } from '../../ai/stats'
 import { emptyState, type EvalEngine, type GameConfig, type GameState } from '../../ai/types'
 
 /** Short delay so "AI thinking…" is actually visible before the move lands. */
@@ -48,6 +50,10 @@ export function GameScreen() {
   const moverRef = useRef<LookaheadMover | null>(null)
   const affinityRef = useRef<Affinity | null>(null)
   const affinityLoadRef = useRef<Promise<Affinity> | null>(null)
+  const profileRef = useRef<PlayerProfile | null>(null)
+  const perceptionRef = useRef<PerceptionProfile | null>(null)
+  const statsRef = useRef<GameStats>(emptyStats())
+  const adaptiveRef = useRef(0)
   const humanSideRef = useRef<Cell>(1)
   const thinkingRef = useRef(false)
   const overRef = useRef(false)
@@ -76,6 +82,27 @@ export function GameScreen() {
     })
   }, [])
 
+  // Load the persistent player-style profile (attacker/defender) once.
+  useEffect(() => {
+    void loadProfile().then((p) => {
+      if (p) profileRef.current = new PlayerProfile(0.95, p)
+      else profileRef.current = new PlayerProfile()
+    })
+  }, [])
+
+  // Load the persistent 3D-perception profile + game stats once.
+  useEffect(() => {
+    void loadPerception().then((p) => {
+      perceptionRef.current = new PerceptionProfile(0.95, p ?? undefined)
+    })
+    void loadStats().then((s) => {
+      if (s) {
+        statsRef.current = s
+        adaptiveRef.current = adaptiveLevel(s)
+      }
+    })
+  }, [])
+
   useEffect(
     () => () => {
       if (timerRef.current) clearTimeout(timerRef.current)
@@ -88,15 +115,22 @@ export function GameScreen() {
   }, [])
 
   // Reward the winner's cells / penalize the loser's, then save the memory so
-  // the AI keeps learning your winning moves across restarts.
+  // the AI keeps learning your winning moves across restarts. Also record the
+  // game outcome into the stats store to drive adaptive difficulty.
   const endGame = useCallback(
     (winner: Cell) => {
+      const s = statsRef.current
+      recordResult(s, winner, humanSideRef.current)
+      adaptiveRef.current = adaptiveLevel(s)
+      void saveStats(s)
+
       const predictor = predictorRef.current
       const aff = affinityRef.current
-      if (!predictor || !aff) return
-      const loser: Cell = winner === P1 ? P2 : P1
-      applyResult(aff, winner, loser)
-      persistAffinity(aff)
+      if (predictor && aff) {
+        const loser: Cell = winner === P1 ? P2 : P1
+        applyResult(aff, winner, loser)
+        persistAffinity(aff)
+      }
     },
     [persistAffinity],
   )
@@ -246,6 +280,9 @@ export function GameScreen() {
       const board = new Board(cfg.size)
       const predictor = new OpponentPredictor(board, engine, 0.9, affinityRef.current)
       const mover = new LookaheadMover(engine, board, predictor, cfg.difficulty)
+      mover.setAggression(profileRef.current?.aggression() ?? 0)
+      // Hard is intentionally unbeatable; only easy/medium adapt to your results.
+      if (cfg.difficulty !== 'hard') mover.setAdaptive(adaptiveRef.current)
       predictor.newGame()
       boardRef.current = board
       predictorRef.current = predictor
@@ -321,8 +358,20 @@ export function GameScreen() {
     if (snap.currentPlayer !== humanSideRef.current) return
     if (board.cells[pending] !== EMPTY) return
     const human = humanSideRef.current
+    const { style, axis } = analyzeMove(board, human, pending)
     board.apply(pending, human)
     predictor.record(human, pending)
+    const prof = profileRef.current
+    if (prof) {
+      prof.record(style)
+      moverRef.current?.setAggression(prof.aggression())
+      void saveProfile(prof.toJSON())
+    }
+    const perc = perceptionRef.current
+    if (perc) {
+      perc.record(axis)
+      void savePerception(perc.toJSON())
+    }
     movesRef.current.push(pending)
     const outcome = board.outcome()
     setPending(null)

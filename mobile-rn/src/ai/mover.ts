@@ -29,6 +29,9 @@ export const DIFFICULTY_TEMPERATURE: Record<Difficulty, number> = {
   hard: 0.0,
 }
 
+/** Lookahead depth the Hint uses, independent of difficulty (strong hints). */
+export const HINT_DEPTH = 5
+
 export interface DifficultyConfig {
   depth: number
   top_k: number
@@ -597,12 +600,14 @@ export class LookaheadMover {
     const moves = this.board.moves()
     if (moves.length === 0) return -1
     const search = new Board(this.board.n, this.board.cells)
+    // immediate win
     for (const m of moves) {
       search.apply(m, side)
       const { winner: w } = search.outcome()
       search.cells[m] = EMPTY
       if (w === side) return m
     }
+    // immediate block: never let the AI win next move
     const opp: Cell = side === P1 ? P2 : P1
     for (const m of moves) {
       search.apply(m, opp)
@@ -610,8 +615,10 @@ export class LookaheadMover {
       search.cells[m] = EMPTY
       if (w === opp) return m
     }
+    // Deep lookahead regardless of difficulty (HINT_DEPTH plies), so the hint
+    // is strong even on Easy/Medium — it avoids moves the AI can punish.
     this._nodes = 0
-    const scored = (await this._scored(side, moves, search)).sort((a, b) => b[1] - a[1])
+    const scored = (await this._scored(side, moves, search, HINT_DEPTH)).sort((a, b) => b[1] - a[1])
     return scored.length > 0 ? scored[0][0] : -1
   }
 
@@ -740,14 +747,20 @@ export class LookaheadMover {
    * candidate is a single net evaluation, so they're batched into chunked
    * native calls (parallel on-device); deeper searches fall back to the
    * sequential recursion (identical values either way). */
-  private async _scored(ai: Cell, moves: number[], search: Board): Promise<Array<[number, number]>> {
-    if (this.depth <= 1 && this._require().evalPositions) {
+  private async _scored(
+    ai: Cell,
+    moves: number[],
+    search: Board,
+    depthOverride?: number,
+  ): Promise<Array<[number, number]>> {
+    const depth = depthOverride ?? this.depth
+    if (depth <= 1 && this._require().evalPositions) {
       return this._scoredBatched(ai, moves, search)
     }
     const out: Array<[number, number]> = []
     for (const m of moves) {
       await this._maybeYield()
-      out.push([m, await this._evalMove(search, m, ai)])
+      out.push([m, await this._evalMove(search, m, ai, depth)])
     }
     return out
   }

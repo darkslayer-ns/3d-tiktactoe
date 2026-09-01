@@ -38,20 +38,22 @@ DIFFICULTY_TEMPERATURE = {
 # sampling the final move from the top scores (keeps play varied on repeated
 # positions; hard stays near-greedy). entry_temp varies the opening.
 DIFFICULTY = {
+    # blunder_kind: 'random' (EASY — blunders any non-forced move),
+    # 'suboptimal' (MEDIUM — one mistake, only when about to win), 'none' (HARD).
     "easy": {
         "depth": 2, "top_k": 3, "sampling": False, "max_nodes": 220,
-        "entry_temp": 1.0, "entry_moves": 2, "wrong_move_budget": 1, "mistake_rate": 0.5,
-        "move_temp": 0.8,
+        "entry_temp": 1.0, "entry_moves": 2, "wrong_move_budget": 5, "mistake_rate": 0.5,
+        "move_temp": 0.8, "blunder_kind": "random",
     },
     "medium": {
         "depth": 3, "top_k": 3, "sampling": False, "max_nodes": 220,
-        "entry_temp": 0.7, "entry_moves": 1, "wrong_move_budget": 1, "mistake_rate": 0.5,
-        "move_temp": 0.5,
+        "entry_temp": 0.6, "entry_moves": 1, "wrong_move_budget": 1, "mistake_rate": 0.7,
+        "move_temp": 0.6, "blunder_kind": "suboptimal",
     },
     "hard": {
         "depth": 4, "top_k": 3, "sampling": False, "max_nodes": 220,
-        "entry_temp": 0.5, "entry_moves": 1, "wrong_move_budget": 0, "mistake_rate": 0.0,
-        "move_temp": 0.15,
+        "entry_temp": 0.3, "entry_moves": 1, "wrong_move_budget": 0, "mistake_rate": 0.0,
+        "move_temp": 0.15, "blunder_kind": "none",
     },
 }
 
@@ -134,6 +136,7 @@ class LookaheadMover:
         self.shift_rate = 0.0
         self.wrong_move_budget = cfg.get("wrong_move_budget", 0)
         self.move_temp = cfg.get("move_temp", 0.0)
+        self.blunder_kind = cfg.get("blunder_kind", "random")
         self._wrong_moves_used = 0
 
     def _forward(self, board: Board, player: int):
@@ -253,6 +256,17 @@ class LookaheadMover:
             return best
         return _random.choice(cands)
 
+    def _pick_blunder(self, moves, scored, best):
+        """The deliberate-mistake cell. 'random' plays anywhere (EASY); 'suboptimal'
+        (MEDIUM) plays a good-but-not-best move, never the winning cell itself."""
+        if self.blunder_kind == "suboptimal":
+            if scored and len(scored) > 1:
+                rank = 1 + int(_random.random() * min(len(scored) - 1, 3))
+                return scored[rank][0]
+            others = [m for m in moves if m != best]
+            return _random.choice(others) if others else _random.choice(moves)
+        return _random.choice(moves)
+
     def __call__(self, ai: int) -> int:
         moves = self.board.moves()
         if not moves:
@@ -266,18 +280,23 @@ class LookaheadMover:
 
         best = self._strong_move(ai, moves)
         scored = getattr(self, "_last_scored", None)
+        forced = getattr(self, "_last_forced", None)
 
-        # deliberate wrong moves: blunder at most `wrong_move_budget` times
-        # per game (the cap makes "easy" beatable while later moves stay sane).
-        # Applied AFTER the strong move so it overrides even an immediate
-        # win/block — a genuine blunder.
-        if (
-            self.mistake_rate > 0
-            and self._wrong_moves_used < self.wrong_move_budget
-            and _random.random() < self.mistake_rate
-        ):
+        # Deliberate mistakes, gated by difficulty rules:
+        #  - easy (random): may blunder any move EXCEPT when it would win or must
+        #    block (never throws away a win / never misses a block).
+        #  - medium (suboptimal): `wrong_move_budget` (1) mistakes, only when it
+        #    is ABOUT TO WIN — gifts the win once, but never fails to block.
+        kind = getattr(self, "blunder_kind", "random")
+        should_blunder = False
+        if self.mistake_rate > 0 and self._wrong_moves_used < self.wrong_move_budget:
+            if kind == "random":
+                should_blunder = forced is None and _random.random() < self.mistake_rate
+            elif kind == "suboptimal":
+                should_blunder = forced == "win" and _random.random() < self.mistake_rate
+        if should_blunder:
             self._wrong_moves_used += 1
-            final = _random.choice(moves)
+            final = self._pick_blunder(moves, scored, best)
             self._record_decision(ai, final, scored, "blunder")
             return final
 
@@ -349,6 +368,7 @@ class LookaheadMover:
         opp = P2 if ai == P1 else P1
         self._nodes = 0
         self._last_scored = None
+        self._last_forced = None
 
         # immediate win
         for m in moves:
@@ -356,6 +376,7 @@ class LookaheadMover:
             w, _, over = search.outcome()
             search.cells[m] = EMPTY
             if w == ai:
+                self._last_forced = "win"
                 return m
 
         # immediate block: opponent wins next move unless we take that cell
@@ -364,6 +385,7 @@ class LookaheadMover:
             w, _, over = search.outcome()
             search.cells[m] = EMPTY
             if w == opp:
+                self._last_forced = "block"
                 return m
 
         scored = sorted(self._scored(ai, moves, search), key=lambda x: -x[1])

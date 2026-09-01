@@ -6,7 +6,7 @@ import { Board, P1, P2 } from '../game/board'
 import { EMPTY } from '../game/types'
 import type { Cell } from '../game/types'
 import type { Difficulty, EvalEngine } from '../ai/types'
-import { LookaheadMover } from '../ai/mover'
+import { LookaheadMover, DIFFICULTY } from '../ai/mover'
 import { OpponentPredictor } from '../ai/predictor'
 import { createMockEngine } from '../ai/engine'
 import { scriptedRng } from './rng-helper'
@@ -194,5 +194,41 @@ describe('LookaheadMover', () => {
       const m2 = new LookaheadMover(batched, b2, new OpponentPredictor(b2, batched), difficulty, lcg(1234))
       expect(await m2.chooseMove(P1)).toBe(await m1.chooseMove(P1))
     }
+  })
+
+  it('difficulty blunder kinds are configured', () => {
+    expect(DIFFICULTY.easy.blunder_kind).toBe('random')
+    expect(DIFFICULTY.medium.blunder_kind).toBe('suboptimal')
+    expect(DIFFICULTY.hard.blunder_kind).toBe('none')
+  })
+
+  it('medium blunders ONCE when about to win (not the winning move)', async () => {
+    const b = new Board(3)
+    b.apply(b.idx(0, 0, 0), P1)
+    b.apply(b.idx(1, 0, 0), P1) // P1 (AI) can win at (2,0,0)
+    const engine = legalEngine()
+    // blunder check (0.1 < 0.7) → blunders; choice picks a NON-winning move (5th of the 24 others).
+    const { rng, remaining } = scriptedRng([
+      { kind: 'random', value: 0.1 },
+      { kind: 'choice', value: 5, len: 24 },
+    ])
+    const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'medium', rng)
+    expect(mover.blunderKind).toBe('suboptimal')
+    const m = await mover.chooseMove(P1)
+    expect(mover.lastDecision?.kind).toBe('blunder')
+    expect(m).not.toBe(b.idx(2, 0, 0)) // throws away the win
+    expect(b.cells[m]).toBe(EMPTY)
+    expect(remaining()).toBe(0)
+
+    // Budget is spent (wrong_move_budget = 1): next identical win is taken.
+    const b2 = new Board(3)
+    b2.apply(b2.idx(0, 0, 0), P1)
+    b2.apply(b2.idx(1, 0, 0), P1)
+    const rng2 = scriptedRng([{ kind: 'random', value: 0.9 }]) // blunder check fails → takes win
+    const mover2 = new LookaheadMover(engine, b2, new OpponentPredictor(b2, engine), 'medium', rng2.rng)
+    const m2 = await mover2.chooseMove(P1)
+    expect(m2).toBe(b2.idx(2, 0, 0))
+    expect(mover2.lastDecision?.kind).toBe('search')
+    expect(rng2.remaining()).toBe(0)
   })
 })

@@ -21,6 +21,7 @@ import { argmax, sampleIndex, sigmoid, softmax, pyRound } from './math'
 import type { Rng } from './math'
 import { defaultRng } from './math'
 import type { OpponentPredictor } from './predictor'
+import { hasWinInOne, wouldWin } from './profile'
 
 export const DIFFICULTY_TEMPERATURE: Record<Difficulty, number> = {
   easy: 1.5,
@@ -157,16 +158,21 @@ export class LookaheadMover {
   readonly maxNodes: number
   readonly entryTemp: number
   readonly entryMoves: number
-  readonly mistakeRate: number
+  mistakeRate: number
   readonly shiftRate: number
-  readonly wrongMoveBudget: number
-  readonly moveTemp: number
+  wrongMoveBudget: number
+  moveTemp: number
   lastDecision: AiDecision | null = null
+  /** Player style: +1 attacker … -1 defender. Biases opponent-reply prediction. */
+  aggression = 0
   private rng: Rng
   private _nodes = 0
   private _wrongMovesUsed = 0
   private _lastScored: Array<[number, number]> | null = null
   private _yieldT = 0
+  private _baseMistakeRate = 0
+  private _baseMoveTemp = 0
+  private _baseWrongMoveBudget = 0
 
   /**
    * Cooperatively yield control back to the JS thread every ~16ms so the AI
@@ -192,6 +198,60 @@ export class LookaheadMover {
     return Math.max(24, Math.round(this.maxNodes * k))
   }
 
+  /** Set the human's style profile: +1 attacker … -1 defender. */
+  setAggression(aggression: number): void {
+    this.aggression = Math.max(-1, Math.min(1, aggression))
+  }
+
+  /**
+   * Adapt the AI's strength around the difficulty's base params.
+   * level > 0 eases up (more blunders/randomness — for a struggling player),
+   * level < 0 hardens (fewer blunders — for a dominant player).
+   */
+  setAdaptive(level: number): void {
+    const l = Math.max(-1, Math.min(1, level))
+    this.mistakeRate = Math.max(0, Math.min(0.8, this._baseMistakeRate + l * 0.3))
+    this.moveTemp = Math.max(0, Math.min(1.2, this._baseMoveTemp + l * 0.4))
+    this.wrongMoveBudget = Math.max(0, Math.round(this._baseWrongMoveBudget + l * 2))
+  }
+
+  /** Does the human playing `r` count as an attacking reply? (win or threat). */
+  private _attackIndicator(board: Board, opp: Cell, r: number): number {
+    if (wouldWin(board, opp, r)) return 1
+    const prev = board.cells[r]
+    board.cells[r] = opp
+    const threat = hasWinInOne(board, opp)
+    board.cells[r] = prev
+    return threat ? 1 : 0
+  }
+
+  /** Does the human playing `r` count as a defensive reply? (blocks our win). */
+  private _defendIndicator(board: Board, ai: Cell, r: number): number {
+    return wouldWin(board, ai, r) ? 1 : 0
+  }
+
+  /**
+   * Re-weights the opponent-reply distribution by the player's style: an
+   * attacker's replies that make threats get up-weighted, a defender's blocks
+   * get up-weighted. Returns [biasedDist, total] (weights ≥ 0).
+   */
+  private _styleWeighted(
+    board: Board,
+    ai: Cell,
+    opp: Cell,
+    dist: Array<[number, number]>,
+  ): Array<[number, number]> {
+    if (Math.abs(this.aggression) < 0.2 || dist.length < 2) return dist
+    const a = this.aggression
+    const damp = 0.7
+    return dist.map(([r, pr]) => {
+      const att = this._attackIndicator(board, opp, r)
+      const def = this._defendIndicator(board, ai, r)
+      const w = Math.max(0.02, pr * (1 + a * damp * (att - def)))
+      return [r, w] as [number, number]
+    })
+  }
+
   constructor(
     model: EvalEngine | null,
     board: Board,
@@ -215,6 +275,9 @@ export class LookaheadMover {
     this.shiftRate = 0.0
     this.wrongMoveBudget = cfg.wrong_move_budget
     this.moveTemp = cfg.move_temp
+    this._baseMistakeRate = cfg.mistake_rate
+    this._baseMoveTemp = cfg.move_temp
+    this._baseWrongMoveBudget = cfg.wrong_move_budget
     this.rng = rng
   }
 
@@ -284,17 +347,20 @@ export class LookaheadMover {
       return this._evaluate(board, ai)[0]
     }
 
+    // Bias the predicted replies by the human's style (attacker/defender).
+    const replies = this._styleWeighted(board, ai, opp, dist)
+
     let total = 0.0
-    for (const [, p] of dist) total += p
+    for (const [, p] of replies) total += p
 
     // leaf level: the replies' values are independent → evaluate in one batch
     if (depth <= 1) {
-      return this._opponentLeaves(board, ai, dist, total)
+      return this._opponentLeaves(board, ai, replies, total)
     }
 
     let exp = 0.0
     const nextTopK = Math.max(1, topK - 1)
-    for (const [r, pr] of dist) {
+    for (const [r, pr] of replies) {
       await this._maybeYield()
       const w = pr / total
       board.apply(r, opp)

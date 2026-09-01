@@ -145,36 +145,71 @@ function Mark({ value, index, position, highlighted, dim, interactive, onPointer
   // Non-interactive marks stay visible but are never hit by the raycaster.
   const meshProps = interactive ? {} : { raycast: () => null }
 
+  // "Teleport" pop-in on mount: scale 0 → 1 with a springy overshoot plus an
+  // emissive flash that settles to `intensity`.
+  const g = useRef<THREE.Group>(null)
+  const start = useRef(Date.now())
+  const mats = useRef<THREE.MeshStandardMaterial[]>([])
+
+  useFrame(() => {
+    const grp = g.current
+    const st = start.current
+    if (!grp || st === 0) return
+    const t = Math.min(1, (Date.now() - st) / 420)
+    if (t >= 1) {
+      grp.scale.setScalar(1)
+      start.current = 0
+      for (const m of mats.current) m.emissiveIntensity = intensity
+      return
+    }
+    const c1 = 1.70158
+    const c3 = c1 + 1
+    const s = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
+    grp.scale.setScalar(Math.max(0.001, s))
+    const flash = 1 + 2.5 * (1 - t)
+    for (const m of mats.current) m.emissiveIntensity = intensity * flash
+  })
+
+  const refMat = (m: THREE.MeshStandardMaterial | null) => {
+    if (m && !mats.current.includes(m)) mats.current.push(m)
+  }
+
   if (value === 1) {
     // an X lying in the face plane: two thin bars crossing at 45°/135°
     const xLen = 1.15 * scale
-    const mat = (
-      <meshStandardMaterial
-        color="#22d3ee"
-        emissive="#22d3ee"
-        emissiveIntensity={intensity}
-        roughness={0.25}
-      />
-    )
     return (
       <group
+        ref={g}
         position={position}
         onPointerDown={onPointerDown}
         onClick={(e: ThreeEvent<MouseEvent>) => onClick(e, index)}
       >
         <mesh {...meshProps} rotation={[0, 0, Math.PI / 4]}>
           <boxGeometry args={[xLen, 0.22, 0.22]} />
-          {mat}
+          <meshStandardMaterial
+            ref={refMat}
+            color="#22d3ee"
+            emissive="#22d3ee"
+            emissiveIntensity={intensity}
+            roughness={0.25}
+          />
         </mesh>
         <mesh {...meshProps} rotation={[0, 0, -Math.PI / 4]}>
           <boxGeometry args={[xLen, 0.22, 0.22]} />
-          {mat}
+          <meshStandardMaterial
+            ref={refMat}
+            color="#22d3ee"
+            emissive="#22d3ee"
+            emissiveIntensity={intensity}
+            roughness={0.25}
+          />
         </mesh>
       </group>
     )
   }
   return (
     <group
+      ref={g}
       position={position}
       onPointerDown={onPointerDown}
       onClick={(e: ThreeEvent<MouseEvent>) => onClick(e, index)}
@@ -182,6 +217,7 @@ function Mark({ value, index, position, highlighted, dim, interactive, onPointer
       <mesh {...meshProps}>
         <torusGeometry args={[0.42 * scale, 0.12, 16, 48]} />
         <meshStandardMaterial
+          ref={refMat}
           color="#f472b6"
           emissive="#f472b6"
           emissiveIntensity={intensity}

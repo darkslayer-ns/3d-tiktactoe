@@ -39,6 +39,9 @@ export const HINT_DEPTH = 5
  */
 export const DENY_WEIGHT = 0.05
 
+/** Defensive-bias strength per unit of `defensive` (EASY blocks > attacks). */
+export const DEFENSIVE_WEIGHT = 0.15
+
 export interface DifficultyConfig {
   depth: number
   top_k: number
@@ -56,6 +59,9 @@ export interface DifficultyConfig {
    *   'none'        → never blunders (HARD)
    */
   blunder_kind: 'random' | 'suboptimal' | 'none'
+  /** 0 = balanced; >0 biases the AI to BLOCK the player rather than attack
+   * (0.5-1 makes the AI visibly defensive — used to make EASY easy). */
+  defensive?: number
 }
 
 /** Pure RUNTIME config — all difficulties share the same strong base weights. */
@@ -72,6 +78,7 @@ export const DIFFICULTY: Record<Difficulty, DifficultyConfig> = {
     mistake_rate: 0.6,
     move_temp: 1.1,
     blunder_kind: 'random',
+    defensive: 1,
   },
   medium: {
     depth: 3,
@@ -183,6 +190,7 @@ export class LookaheadMover {
   wrongMoveBudget: number
   moveTemp: number
   readonly blunderKind: 'random' | 'suboptimal' | 'none'
+  readonly defensive: number
   lastDecision: AiDecision | null = null
   /** Player style: +1 attacker … -1 defender. Biases opponent-reply prediction. */
   aggression = 0
@@ -310,6 +318,7 @@ export class LookaheadMover {
     this.wrongMoveBudget = cfg.wrong_move_budget
     this.moveTemp = cfg.move_temp
     this.blunderKind = cfg.blunder_kind ?? 'random'
+    this.defensive = cfg.defensive ?? 0
     this._baseMistakeRate = cfg.mistake_rate
     this._baseMoveTemp = cfg.move_temp
     this._baseWrongMoveBudget = cfg.wrong_move_budget
@@ -718,6 +727,16 @@ export class LookaheadMover {
       for (const e of scored) {
         const freq = heat.get(e[0]) ?? 0
         if (freq >= 1) e[1] += DENY_WEIGHT * freq
+      }
+      scored.sort((a, b) => b[1] - a[1])
+    }
+    // Defensive bias (EASY): prefer moves that BLOCK the player's threats and
+    // avoid moves that build the AI's own threats, so the AI plays reactively.
+    if (this.defensive > 0) {
+      for (const e of scored) {
+        const block = this._defendIndicator(search, human, e[0])
+        const attack = this._attackIndicator(search, ai, e[0])
+        e[1] += DEFENSIVE_WEIGHT * this.defensive * (block - attack)
       }
       scored.sort((a, b) => b[1] - a[1])
     }

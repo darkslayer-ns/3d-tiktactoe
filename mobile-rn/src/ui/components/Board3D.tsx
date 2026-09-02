@@ -300,11 +300,26 @@ function WinBeam({ line, size }: { line: Coord[]; size: number }) {
     // makes R3F try to assign the read-only property and crash.
     return { mid: mid.toArray() as [number, number, number], len, quat: [q.x, q.y, q.z, q.w] as [number, number, number, number] }
   }, [line, off, k])
+
+  // "Flash" the winning line for the first ~1.6s (until the result overlay
+  // appears) — a quick pulsing bloom.
+  const mat = useRef<THREE.MeshStandardMaterial>(null)
+  const start = useRef(Date.now())
+  useFrame(() => {
+    const m = mat.current
+    if (!m) return
+    const t = (Date.now() - start.current) / 1000
+    const pulse = 0.5 + 0.5 * Math.abs(Math.sin(t * 7))
+    m.emissiveIntensity = 1.5 + 2.5 * pulse
+    m.opacity = 0.6 + 0.4 * pulse
+  })
+
   return (
     <group position={mid}>
       <mesh raycast={() => null} quaternion={quat}>
         <cylinderGeometry args={[0.05, 0.05, len + 0.4, 8]} />
         <meshStandardMaterial
+          ref={mat}
           color="#ffffff"
           emissive="#e879f9"
           emissiveIntensity={2.5}

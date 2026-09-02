@@ -43,11 +43,11 @@ DIFFICULTY = {
     "easy": {
         "depth": 2, "top_k": 3, "sampling": False, "max_nodes": 220,
         "entry_temp": 1.0, "entry_moves": 2, "wrong_move_budget": 5, "mistake_rate": 0.5,
-        "move_temp": 0.8, "blunder_kind": "random",
+        "move_temp": 0.8, "blunder_kind": "random", "defensive": 1,
     },
     "medium": {
         "depth": 3, "top_k": 3, "sampling": False, "max_nodes": 220,
-        "entry_temp": 0.6, "entry_moves": 1, "wrong_move_budget": 1, "mistake_rate": 0.35,
+        "entry_temp": 0.6, "entry_moves": 1, "wrong_move_budget": 1, "mistake_rate": 0.25,
         "move_temp": 0.5, "blunder_kind": "suboptimal",
     },
     "hard": {

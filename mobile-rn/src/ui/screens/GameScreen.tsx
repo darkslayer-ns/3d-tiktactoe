@@ -44,6 +44,7 @@ export function GameScreen() {
   const [welcomeVisible, setWelcomeVisible] = useState(false)
   const [welcomeMode, setWelcomeMode] = useState<'first' | 'howto'>('first')
   const [roundKey, setRoundKey] = useState(0)
+  const [resultVisible, setResultVisible] = useState(false)
 
   const engineRef = useRef<EvalEngine | null>(null)
   const boardRef = useRef<Board | null>(null)
@@ -110,6 +111,15 @@ export function GameScreen() {
     },
     [],
   )
+
+  // Let the winning line flash for ~1.6s, THEN reveal the result overlay.
+  useEffect(() => {
+    if (snap.over && !snap.demo) {
+      const id = setTimeout(() => setResultVisible(true), 1600)
+      return () => clearTimeout(id)
+    }
+    setResultVisible(false)
+  }, [snap.over, snap.demo])
 
   const persistAffinity = useCallback((aff: Affinity) => {
     void saveAffinity(aff).catch(() => {})
@@ -515,7 +525,7 @@ const showHowTo = useCallback(
       {!snap.demo && (
         <View style={styles.bottom}>
           <StatusBar
-            state={snap}
+            state={resultVisible || !snap.over ? snap : { ...snap, over: false, winner: EMPTY }}
             humanSide={config.humanSide}
             onPlayAgain={playAgain}
             onNewGame={openMenu}
@@ -536,7 +546,7 @@ const showHowTo = useCallback(
         </View>
       )}
 
-      {snap.over && !snap.demo && (
+      {snap.over && !snap.demo && resultVisible && (
         <GameOverOverlay
           winner={snap.winner}
           humanSide={config.humanSide}

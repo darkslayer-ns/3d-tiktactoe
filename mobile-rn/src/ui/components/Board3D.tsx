@@ -48,10 +48,26 @@ const EXPLODE = 0.4
 
 /** Side length of each cell's box (same for every board size). */
 const SLOT_SIZE = 0.82 * (1 + EXPLODE) * 0.8
-/** Shared 12-edge outline (no face diagonals) for the empty-cell "glow border". */
-const slotEdgesGeometry = new THREE.EdgesGeometry(
-  new THREE.BoxGeometry(SLOT_SIZE, SLOT_SIZE, SLOT_SIZE),
-)
+/** Thickness of each slot's glowing edge bar (GL linewidth is ignored on Metal,
+ * so the "cube lines" are thin boxes instead of line segments). */
+const EDGE_THICKNESS = 0.038
+
+/** The 12 edges of a slot box, as (position, box size) bar transforms. */
+const slotEdges: Array<{ pos: [number, number, number]; size: [number, number, number] }> = (() => {
+  const h = SLOT_SIZE / 2
+  const t = EDGE_THICKNESS
+  const bars: Array<{ pos: [number, number, number]; size: [number, number, number] }> = []
+  for (const sy of [-1, 1]) {
+    for (const sz of [-1, 1]) bars.push({ pos: [0, sy * h, sz * h], size: [SLOT_SIZE, t, t] })
+  }
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) bars.push({ pos: [sx * h, 0, sz * h], size: [t, SLOT_SIZE, t] })
+  }
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) bars.push({ pos: [sx * h, sy * h, 0], size: [t, t, SLOT_SIZE] })
+  }
+  return bars
+})()
 
 /** Camera orbit limits (web OrbitControls used 3..14). */
 const MIN_DISTANCE = 4
@@ -242,12 +258,14 @@ interface SlotProps {
 }
 
 function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPointerDown, onClick }: SlotProps) {
-  const edgeMat = useRef<THREE.LineBasicMaterial>(null)
+  const edgeMat = useMemo(
+    () => new THREE.MeshBasicMaterial({ color: '#0284c7', transparent: true, opacity: 0.3 }),
+    [],
+  )
   const posV = useMemo(() => new THREE.Vector3(position[0], position[1], position[2]), [position])
 
   useFrame((state) => {
-    const e = edgeMat.current
-    if (!e) return
+    const e = edgeMat
     const t = state.clock.elapsedTime
     // Depth fade: cells farther from the camera go fainter (atmospheric).
     const camDist = state.camera.position.length() || 1
@@ -277,10 +295,12 @@ function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPo
         <boxGeometry args={[SLOT_SIZE, SLOT_SIZE, SLOT_SIZE]} />
         <meshStandardMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
-      {/* glowing cyan border */}
-      <lineSegments geometry={slotEdgesGeometry} raycast={() => null}>
-        <lineBasicMaterial ref={edgeMat} color="#0284c7" transparent opacity={0.3} />
-      </lineSegments>
+      {/* glowing cyan border: one thin box per edge, sharing one animated material */}
+      {slotEdges.map((b, i) => (
+        <mesh key={i} position={b.pos} raycast={() => null} material={edgeMat}>
+          <boxGeometry args={b.size} />
+        </mesh>
+      ))}
     </group>
   )
 }
@@ -319,7 +339,7 @@ function WinBeam({ line, size }: { line: Coord[]; size: number }) {
   return (
     <group position={mid}>
       <mesh raycast={() => null} quaternion={quat}>
-        <cylinderGeometry args={[0.05, 0.05, len + 0.4, 8]} />
+        <cylinderGeometry args={[0.07, 0.07, len + 0.4, 8]} />
         <meshStandardMaterial
           ref={mat}
           color="#ffffff"

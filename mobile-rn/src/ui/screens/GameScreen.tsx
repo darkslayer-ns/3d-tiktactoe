@@ -28,6 +28,8 @@ import { loadAffinity, saveAffinity, getWelcomed, setWelcomed, loadProfile, save
 import { analyzeMove, PerceptionProfile, PlayerProfile } from '../../ai/profile'
 import { adaptiveLevel, emptyStats, recordResult, type GameStats } from '../../ai/stats'
 import { emptyState, type EvalEngine, type GameConfig, type GameState } from '../../ai/types'
+import { IS_INTERNAL_BUILD } from '../../dev/internalBuild'
+import { ModelKnowledgePanel } from '../../dev/ModelKnowledgePanel'
 
 /** Short delay so "AI thinking…" is actually visible before the move lands. */
 const AI_DELAY_MS = 350
@@ -45,6 +47,7 @@ export function GameScreen() {
   const [welcomeMode, setWelcomeMode] = useState<'first' | 'howto'>('first')
   const [roundKey, setRoundKey] = useState(0)
   const [resultVisible, setResultVisible] = useState(false)
+  const [knowledgeVisible, setKnowledgeVisible] = useState(false)
 
   const engineRef = useRef<EvalEngine | null>(null)
   const boardRef = useRef<Board | null>(null)
@@ -520,6 +523,17 @@ const showHowTo = useCallback(
             <Text style={styles.engineErrorText}>{engineError}</Text>
           </View>
         )}
+
+        {IS_INTERNAL_BUILD && (
+          <Pressable
+            onPress={() => setKnowledgeVisible(true)}
+            style={styles.debugBtn}
+            hitSlop={8}
+            testID="debug-model-knowledge"
+          >
+            <Text style={styles.debugBtnText}>AI</Text>
+          </Pressable>
+        )}
       </View>
 
       {!snap.demo && (
@@ -563,6 +577,23 @@ const showHowTo = useCallback(
           buttonLabel={welcomeMode === 'howto' ? 'Got it' : 'Start playing'}
         />
       )}
+
+      {IS_INTERNAL_BUILD && (
+        <ModelKnowledgePanel
+          visible={knowledgeVisible}
+          onClose={() => setKnowledgeVisible(false)}
+          engine={engineRef.current}
+          board={boardRef.current}
+          humanSide={config.humanSide}
+          difficulty={config.difficulty}
+          predictor={predictorRef.current}
+          mover={moverRef.current}
+          profile={profileRef.current}
+          perception={perceptionRef.current}
+          stats={statsRef.current}
+          adaptive={adaptiveRef.current}
+        />
+      )}
     </View>
   )
 }
@@ -595,6 +626,29 @@ const styles = StyleSheet.create({
     fontSize: fontSize(13),
     fontWeight: '600',
     textAlign: 'center',
+  },
+  debugBtn: {
+    position: 'absolute',
+    top: spacing(4),
+    right: spacing(4),
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1.5,
+    borderColor: Theme.cyan,
+    backgroundColor: 'rgba(2, 6, 23, 0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: Theme.cyan,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+  },
+  debugBtnText: {
+    color: Theme.cyan,
+    fontSize: fontSize(11),
+    fontWeight: '800',
+    letterSpacing: 1,
   },
   bottom: {
     // StatusBar draws its own top border.

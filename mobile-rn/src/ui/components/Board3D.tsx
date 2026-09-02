@@ -13,20 +13,23 @@
  *  - wireframe shell + two colored point lights + ambient light
  *
  * Touch controls (no drei / no DOM OrbitControls):
- *  - ONE-FINGER DRAG: orbit. Implemented with react-native-gesture-handler
- *    `Gesture.Pan` wrapped around the <Canvas>. RNGH runs at the native
- *    gesture layer, so it never steals the JS responder R3F needs for taps.
- *  - TWO-FINGER PINCH: zoom. `Gesture.Pinch`, composed simultaneously.
+ *  - ONE-FINGER DRAG: orbit. Implemented with RN's responder *capture* phase on
+ *    the wrapper View (onMoveShouldSetResponderCapture). RNGH gestures are NOT
+ *    used: on Android the expo-gl GLSurfaceView consumes touches before RNGH's
+ *    native handlers ever see them. The responder capture runs in the same JS
+ *    responder system R3F uses (its PanResponder on the GLView) and can steal
+ *    drags/pinches while letting taps fall through to the canvas.
+ *  - TWO-FINGER PINCH: zoom, tracked manually from nativeEvent.touches.
  *  - CELL TAPS: R3F-native mesh events (onPointerDown + onClick). The native
  *    Canvas only fires `onClick` when the whole gesture moved < 20px; we add
  *    a stricter 10px threshold on top for web parity by comparing the pointer
  *    down position recorded in onPointerDown.
  *
  * R3F-native gotchas coded around:
- *  - `onClick` needs the PanResponder that the native Canvas installs. RNGH
- *    pan only activates after a movement threshold, so a tap never activates
- *    it and R3F sees the full tap; a drag cancels R3F's pointer (no click is
- *    fired), which is exactly what we want (drag never places a mark).
+ *  - `onClick` needs the PanResponder that the native Canvas installs. Because
+ *    we only capture the responder once the gesture moves > 10px (or a second
+ *    finger lands), a tap never triggers a capture and R3F sees the full tap; a
+ *    drag cancels R3F's pointer (no click is fired), so drags never place a mark.
  *  - Non-interactive meshes get `raycast={() => null}` so they stay visible
  *    but are never hit by the raycaster (same trick as the web build).
  *  - The native Canvas manages dpr/antialias itself; we pass `gl.antialias`
@@ -34,9 +37,8 @@
  */
 
 import { useMemo, useRef, useCallback, useEffect, type RefObject } from 'react'
-import { View, StyleSheet } from 'react-native'
+import { View, StyleSheet, type GestureResponderEvent } from 'react-native'
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber/native'
-import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import * as THREE from 'three'
 import { Theme } from '../theme'
 import { cellCoord, type Cell, type Coord } from '../../game/types'
@@ -544,7 +546,6 @@ export function Board3D({
   // Spherical orbit target, written by the gestures, read by OrbitRig.
   const target = useRef<OrbitTarget>(defaultOrbitTarget(size))
   const userZoomed = useRef(false)
-  const panStart = useRef<{ theta: number; phi: number }>({ theta: 0, phi: 0 })
   const pinchStartDist = useRef(0)
   // Pointer-down position for the manual 10px click threshold (web parity).
   const downRef = useRef<{ x: number; y: number } | null>(null)
@@ -566,44 +567,99 @@ export function Board3D({
     [onCellClick],
   )
 
-  const pan = useMemo(
-    () =>
-      Gesture.Pan()
-        .maxPointers(1)
-        .onStart(() => {
-          panStart.current = { theta: target.current.theta, phi: target.current.phi }
-        })
-        .onUpdate((e) => {
-          const t = target.current
-          t.theta = panStart.current.theta - e.translationX * 0.008
-          t.phi = clamp(panStart.current.phi - e.translationY * 0.008, MIN_PHI, MAX_PHI)
-        }),
-    [],
-  )
+const pan = useRef({ theta: 0, phi: 0 })
+  const gestureStart = useRef<{ x: number; y: number } | null>(null)
+  const pinchRefDist = useRef(0)
+  const pinchActive = useRef(false)
 
-  const pinch = useMemo(
-    () =>
-      Gesture.Pinch()
-        .onStart(() => {
+  // Android: react-native-gesture-handler never sees touches over the expo-gl
+  // GLSurfaceView (it consumes them at the native layer before RNGH's handlers).
+  // Instead we use RN's *responder capture* phase on the wrapper View, which runs
+  // before the GLView's own PanResponder (that R3F installs for cell taps):
+  //   - start phase: never claim -> taps fall through to the GLView -> cell taps.
+  //   - move phase: claim when the gesture becomes a drag or a second finger
+  //     lands -> we own pan/pinch and R3F cancels its pointer (no stray mark).
+  // This uses the same JS responder system R3F relies on, so it works over GL.
+  const handleResponderGrant = useCallback((e: GestureResponderEvent) => {
+    const touches = e.nativeEvent.touches
+    gestureStart.current = gestureStart.current ?? {
+      x: e.nativeEvent.pageX,
+      y: e.nativeEvent.pageY,
+    }
+    pan.current = { theta: target.current.theta, phi: target.current.phi }
+    pinchStartDist.current = target.current.distance
+    pinchActive.current = touches && touches.length >= 2
+    if (pinchActive.current) {
+      pinchRefDist.current = Math.hypot(
+        touches[1].pageX - touches[0].pageX,
+        touches[1].pageY - touches[0].pageY,
+      )
+    }
+  }, [])
+
+  const handleResponderMove = useCallback((e: GestureResponderEvent) => {
+    const touches = e.nativeEvent.touches
+    if (touches && touches.length >= 2) {
+      const dist = Math.hypot(
+        touches[1].pageX - touches[0].pageX,
+        touches[1].pageY - touches[0].pageY,
+      )
+      if (dist > 1) {
+        if (!pinchActive.current || pinchRefDist.current <= 0) {
+          pinchActive.current = true
+          pinchRefDist.current = dist
           pinchStartDist.current = target.current.distance
-        })
-        .onUpdate((e) => {
-          if (e.scale <= 0.01) return
-          userZoomed.current = true
-          target.current.distance = clamp(
-            pinchStartDist.current / e.scale,
-            MIN_DISTANCE,
-            MAX_DISTANCE,
-          )
-        }),
-    [],
-  )
+        }
+        userZoomed.current = true
+        target.current.distance = clamp(
+          pinchStartDist.current * (pinchRefDist.current / dist),
+          MIN_DISTANCE,
+          MAX_DISTANCE,
+        )
+      }
+      return
+    }
+    pinchActive.current = false
+    if (gestureStart.current) {
+      const t = target.current
+      t.theta = pan.current.theta - (e.nativeEvent.pageX - gestureStart.current.x) * 0.008
+      t.phi = clamp(
+        pan.current.phi - (e.nativeEvent.pageY - gestureStart.current.y) * 0.008,
+        MIN_PHI,
+        MAX_PHI,
+      )
+    }
+  }, [])
 
-  const composed = useMemo(() => Gesture.Simultaneous(pan, pinch), [pan, pinch])
+  const handleResponderEnd = useCallback(() => {
+    gestureStart.current = null
+    pinchActive.current = false
+    pinchRefDist.current = 0
+  }, [])
 
   return (
-    <GestureDetector gesture={composed}>
-      <View style={styles.canvasHost}>
+    <View
+      style={styles.canvasHost}
+      collapsable={false}
+      onStartShouldSetResponderCapture={(e) => {
+        gestureStart.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY }
+        return false
+      }}
+      onMoveShouldSetResponderCapture={(e) => {
+        const touches = e.nativeEvent.touches
+        if (touches && touches.length >= 2) return true
+        const s = gestureStart.current
+        if (!s) return false
+        return (
+          Math.abs(e.nativeEvent.pageX - s.x) > 10 ||
+          Math.abs(e.nativeEvent.pageY - s.y) > 10
+        )
+      }}
+      onResponderGrant={handleResponderGrant}
+      onResponderMove={handleResponderMove}
+      onResponderRelease={handleResponderEnd}
+      onResponderTerminate={handleResponderEnd}
+    >
         <Canvas
           style={styles.canvas}
           camera={{ position: INITIAL_CAMERA_POSITION, fov: 45 }}
@@ -629,8 +685,7 @@ export function Board3D({
           <FitRig size={size} userZoomed={userZoomed} target={target} />
           <OrbitRig target={target} />
         </Canvas>
-      </View>
-    </GestureDetector>
+</View>
   )
 }
 

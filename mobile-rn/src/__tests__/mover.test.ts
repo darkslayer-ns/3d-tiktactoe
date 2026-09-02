@@ -196,6 +196,19 @@ describe('LookaheadMover', () => {
     }
   })
 
+  it("denies the player's overused cells (persisted heatmap)", async () => {
+    const b = new Board(3)
+    const engine = legalEngine()
+    const heat = new Map<number, Map<number, number>>()
+    heat.set(P2, new Map([[13, 10]])) // human (P2) heavily overuses the centre
+    const pred = new OpponentPredictor(b, engine, 0.9, heat)
+    const mover = new LookaheadMover(engine, b, pred, 'hard')
+    const m = await mover.chooseMove(P1)
+    const top = mover.lastDecision?.scored ?? []
+    expect(top[0]?.index).toBe(13) // the overused centre ranks first (AI denies it)
+    expect(m).toBeGreaterThanOrEqual(0)
+  })
+
   it('difficulty blunder kinds are configured', () => {
     expect(DIFFICULTY.easy.blunder_kind).toBe('random')
     expect(DIFFICULTY.medium.blunder_kind).toBe('suboptimal')

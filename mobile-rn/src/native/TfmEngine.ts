@@ -43,15 +43,17 @@ function resolveNative(): TfmEngineNative | null {
       g.__turboModuleProxy('TfmEngine')
     }
     if (g.nativeModuleProxy != null && g.nativeModuleProxy.TfmEngine != null) {
-      // Bridgeless mode: reading the property instantiates the module and runs
-      // its installJSIBindingsWithRuntime, which sets globalThis.__TfmEngine.
-      void g.nativeModuleProxy.TfmEngine
+      // Bridgeless mode: `nativeModuleProxy.TfmEngine` is the TurboModule proxy
+      // itself. Prefer the C++ HostObject (`__TfmEngine`) if installJSIBindings
+      // ran, otherwise use the proxy directly (same methods, sync).
+      const proxy = g.nativeModuleProxy.TfmEngine
+      const host = g.__TfmEngine
+      return host ?? proxy
     }
-  } catch {
-    // The module may still be present below; otherwise we're on jest/web.
+  } catch (e) {
+    console.error('[TfmEngine] resolve threw:', e)
   }
-  const native: TfmEngineNative | undefined = g.__TfmEngine
-  return native ?? null
+  return g.__TfmEngine ?? null
 }
 
 // Lazy resolution: the runtime may not be ready when this module is first

@@ -6,16 +6,33 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#020617",
+    "icon": "./assets/isocube_icon.png",
+    "splash": {
+      "image": "./assets/isocube_logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#020617"
+    },
     "plugins": [
-      "./plugins/withTfmEngine"
+      "./plugins/withTfmEngine",
+      ["expo-splash-screen", {
+        "backgroundColor": "#020617",
+        "image": "./assets/isocube_logo.png",
+        "imageWidth": 220,
+        "resizeMode": "contain"
+      }]
     ],
     "android": {
-      "package": "com.neoncube.ttt"
+      "package": "com.neoncube.ttt",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/isocube_icon.png",
+        "backgroundColor": "#020617"
+      }
     },
     "ios": {
       "bundleIdentifier": "com.neoncube.ttt",
       "supportsTablet": true,
-      "buildNumber": "6"
+      "buildNumber": "6",
+      "developmentTeam": "6297A3P4AG"
     }
   }
 }

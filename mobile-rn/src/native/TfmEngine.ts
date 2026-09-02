@@ -41,10 +41,11 @@ function resolveNative(): TfmEngineNative | null {
   try {
     if (typeof g.__turboModuleProxy === 'function') {
       g.__turboModuleProxy('TfmEngine')
-    } else if (g.nativeModuleProxy != null) {
+    }
+    if (g.nativeModuleProxy != null && g.nativeModuleProxy.TfmEngine != null) {
       // Bridgeless mode: reading the property instantiates the module and runs
       // its installJSIBindingsWithRuntime, which sets globalThis.__TfmEngine.
-      g.nativeModuleProxy.TfmEngine
+      void g.nativeModuleProxy.TfmEngine
     }
   } catch {
     // The module may still be present below; otherwise we're on jest/web.
@@ -53,18 +54,25 @@ function resolveNative(): TfmEngineNative | null {
   return native ?? null
 }
 
-const Native = resolveNative()
+// Lazy resolution: the runtime may not be ready when this module is first
+// imported (esp. Android bridgeless), so re-resolve until the binding appears.
+let cachedNative: TfmEngineNative | null = null
+function native(): TfmEngineNative | null {
+  if (!cachedNative) cachedNative = resolveNative()
+  return cachedNative
+}
 
 /** True when the native module has been installed. */
 export function isAvailable(): boolean {
-  return Native !== null
+  return native() !== null
 }
 
 /** Load the embedded weights (idempotent). Returns success. */
 export function load(): boolean {
-  if (!Native) return false
+  const N = native()
+  if (!N) return false
   try {
-    return Native.load()
+    return N.load()
   } catch {
     return false
   }
@@ -79,8 +87,9 @@ export function evalPosition(
   mask: number[],
   n: number,
 ): TfmResult {
-  if (!Native) throw new Error('TfmEngine not available')
-  return Native.evalPosition(board, mask, n)
+  const N = native()
+  if (!N) throw new Error('TfmEngine not available')
+  return N.evalPosition(board, mask, n)
 }
 
 /**
@@ -93,15 +102,17 @@ export function evalPositions(
   masks: number[],
   n: number,
 ): TfmBatchResult {
-  if (!Native) throw new Error('TfmEngine not available')
-  return Native.evalPositions(boards, masks, n)
+  const N = native()
+  if (!N) throw new Error('TfmEngine not available')
+  return N.evalPositions(boards, masks, n)
 }
 
 /** Total parameter count of the loaded model (sanity check). -1 if absent. */
 export function numel(): number {
-  if (!Native) return -1
+  const N = native()
+  if (!N) return -1
   try {
-    return Native.numel()
+    return N.numel()
   } catch {
     return -1
   }

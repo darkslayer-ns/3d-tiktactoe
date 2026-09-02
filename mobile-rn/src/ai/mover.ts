@@ -42,6 +42,14 @@ export const DENY_WEIGHT = 0.05
 /** Defensive-bias strength per unit of `defensive` (EASY blocks > attacks). */
 export const DEFENSIVE_WEIGHT = 0.15
 
+/**
+ * EASY "get-out-of-jail" card: when the AI's search says it's clearly winning
+ * (predicted win-prob above this), it makes a mistake instead — giving the
+ * player a comeback even though the position was lost.
+ */
+export const EASY_PREDICAMENT_THRESHOLD = 0.85
+export const EASY_PREDICAMENT_RATE = 0.9
+
 export interface DifficultyConfig {
   depth: number
   top_k: number
@@ -75,7 +83,7 @@ export const DIFFICULTY: Record<Difficulty, DifficultyConfig> = {
     entry_temp: 1.0,
     entry_moves: 3,
     wrong_move_budget: 6,
-    mistake_rate: 0.6,
+    mistake_rate: 0.25,
     move_temp: 1.1,
     blunder_kind: 'random',
     defensive: 1,
@@ -579,11 +587,16 @@ export class LookaheadMover {
     // The effective mistake rate is the reinforcement-weighted (fuzzy) rate.
     const rate = this._effectiveMistakeRate()
     const withinBudget = this._wrongMovesUsed < this.wrongMoveBudget
+    // EASY get-out-of-jail: if the search thinks the AI is clearly winning
+    // (predicament), it gifts a mistake with a high probability.
+    const predicament =
+      this.blunderKind === 'random' && scored != null && scored.length > 0 && scored[0][1] >= EASY_PREDICAMENT_THRESHOLD
+    const effectiveRate = predicament ? Math.max(rate, EASY_PREDICAMENT_RATE) : rate
     const shouldBlunder =
       rate > 0 &&
       withinBudget &&
       (this.blunderKind === 'random'
-        ? forced === null && this.rng.random() < rate
+        ? forced === null && this.rng.random() < effectiveRate
         : this.blunderKind === 'suboptimal'
           ? forced === 'win' && this.rng.random() < rate
           : false)

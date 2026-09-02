@@ -42,7 +42,7 @@ DIFFICULTY = {
     # 'suboptimal' (MEDIUM — one mistake, only when about to win), 'none' (HARD).
     "easy": {
         "depth": 2, "top_k": 3, "sampling": False, "max_nodes": 220,
-        "entry_temp": 1.0, "entry_moves": 2, "wrong_move_budget": 5, "mistake_rate": 0.5,
+        "entry_temp": 1.0, "entry_moves": 2, "wrong_move_budget": 5, "mistake_rate": 0.25,
         "move_temp": 0.8, "blunder_kind": "random", "defensive": 1,
     },
     "medium": {
@@ -288,10 +288,19 @@ class LookaheadMover:
         #  - medium (suboptimal): `wrong_move_budget` (1) mistakes, only when it
         #    is ABOUT TO WIN — gifts the win once, but never fails to block.
         kind = getattr(self, "blunder_kind", "random")
+        # EASY get-out-of-jail: if the search thinks the AI is clearly winning,
+        # gift a mistake with a high probability.
+        predicament = (
+            kind == "random"
+            and scored is not None
+            and len(scored) > 0
+            and scored[0][1] >= 0.85
+        )
+        eff_rate = max(self.mistake_rate, 0.9) if predicament else self.mistake_rate
         should_blunder = False
         if self.mistake_rate > 0 and self._wrong_moves_used < self.wrong_move_budget:
             if kind == "random":
-                should_blunder = forced is None and _random.random() < self.mistake_rate
+                should_blunder = forced is None and _random.random() < eff_rate
             elif kind == "suboptimal":
                 should_blunder = forced == "win" and _random.random() < self.mistake_rate
         if should_blunder:

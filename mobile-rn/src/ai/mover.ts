@@ -32,6 +32,13 @@ export const DIFFICULTY_TEMPERATURE: Record<Difficulty, number> = {
 /** Lookahead depth the Hint uses, independent of difficulty (strong hints). */
 export const HINT_DEPTH = 5
 
+/**
+ * Denial weight: the AI prefers to occupy cells the player has overplayed
+ * (from the persisted affinity heatmap), DENYING their favourite cells instead
+ * of leaving them open. Map lookups are O(1) — faster than a BST.
+ */
+export const DENY_WEIGHT = 0.05
+
 export interface DifficultyConfig {
   depth: number
   top_k: number
@@ -74,7 +81,7 @@ export const DIFFICULTY: Record<Difficulty, DifficultyConfig> = {
     entry_temp: 0.6,
     entry_moves: 1,
     wrong_move_budget: 1,
-    mistake_rate: 0.35,
+    mistake_rate: 0.25,
     move_temp: 0.5,
     blunder_kind: 'suboptimal',
   },
@@ -702,6 +709,18 @@ export class LookaheadMover {
     }
 
     const scored = (await this._scored(ai, moves, search)).sort((a, b) => b[1] - a[1])
+    // Deny the player's overused cells (persisted heatmap): the AI prefers to
+    // OCCUPY the cells the player keeps winning with, instead of leaving them
+    // open. Skips the Hint path entirely.
+    const human: Cell = ai === P1 ? P2 : P1
+    const heat = this.predictor.affinity.get(human)
+    if (heat) {
+      for (const e of scored) {
+        const freq = heat.get(e[0]) ?? 0
+        if (freq >= 1) e[1] += DENY_WEIGHT * freq
+      }
+      scored.sort((a, b) => b[1] - a[1])
+    }
     this._lastScored = scored
 
     // opening-phase temperature: sample among good moves so the AI does not

@@ -17,6 +17,7 @@ import { Board3D, axisCross } from '../components/Board3D'
 import { MenuSheet } from '../components/MenuSheet'
 import { StatusBar } from '../components/StatusBar'
 import { WelcomeOverlay } from '../components/WelcomeOverlay'
+import { GameOverOverlay } from '../components/GameOverOverlay'
 import { EMPTY, P1, P2, type Cell } from '../../game/types'
 import { Board } from '../../game/board'
 import { createNativeEngine } from '../../ai/engine'
@@ -533,6 +534,15 @@ const showHowTo = useCallback(
             <Text style={styles.cancelBtnText}>Cancel</Text>
           </Pressable>
         </View>
+      )}
+
+      {snap.over && !snap.demo && (
+        <GameOverOverlay
+          winner={snap.winner}
+          humanSide={config.humanSide}
+          onPlayAgain={playAgain}
+          onMenu={openMenu}
+        />
       )}
 
       <MenuSheet visible={menuVisible} onStart={handleStart} onHowTo={showHowTo} />

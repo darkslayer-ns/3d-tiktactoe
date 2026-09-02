@@ -2,7 +2,7 @@
   "expo": {
     "name": "ISOCUBE",
     "slug": "ttt-mobile",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#020617",
@@ -15,7 +15,7 @@
     "ios": {
       "bundleIdentifier": "com.neoncube.ttt",
       "supportsTablet": true,
-      "buildNumber": "4"
+      "buildNumber": "5"
     }
   }
 }

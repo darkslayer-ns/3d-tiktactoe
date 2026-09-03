@@ -17,7 +17,6 @@ import {
   load,
   predictedLine,
   searchScored,
-  searchScoredAsync,
 } from '../native/TfmEngine'
 
 /**
@@ -94,20 +93,8 @@ class NativeEngine implements EvalEngine {
     maxNodes: number,
     aggression: number,
     n: number,
-  ): { moves: number[]; values: number[] } {
-    return searchScored(cells as number[], ai, depth, topK, maxNodes, aggression, n)
-  }
-
-  async searchScoredAsync(
-    cells: readonly Cell[],
-    ai: Cell,
-    depth: number,
-    topK: number,
-    maxNodes: number,
-    aggression: number,
-    n: number,
   ): Promise<{ moves: number[]; values: number[] }> {
-    return searchScoredAsync(cells as number[], ai, depth, topK, maxNodes, aggression, n)
+    return searchScored(cells as number[], ai, depth, topK, maxNodes, aggression, n)
   }
 
   predictedLine(

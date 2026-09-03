@@ -818,25 +818,11 @@ export class LookaheadMover {
       return this._scoredBatched(ai, moves, search)
     }
     const eng = this._require()
-    // Native expectimax: the whole depth>1 lookahead runs in one C++ call. The
-    // async variant runs it on a background thread so the UI never blocks.
-    if (eng.searchScoredAsync) {
-      const r = await eng.searchScoredAsync(
-        search.cells,
-        ai,
-        depth,
-        this.topK,
-        this._effMaxNodes(),
-        this.aggression,
-        search.n,
-      )
-      const out: Array<[number, number]> = []
-      for (let i = 0; i < r.moves.length; i++) out.push([r.moves[i], r.values[i]])
-      return out
-    }
+    // Native expectimax: the whole depth>1 lookahead runs in one C++ call, on
+    // a background thread (resolved as a Promise) so the UI never blocks.
     const native = eng.searchScored
     if (native) {
-      const r = native(
+      const r = await native(
         search.cells,
         ai,
         depth,

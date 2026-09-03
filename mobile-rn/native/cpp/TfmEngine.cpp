@@ -198,7 +198,8 @@ jsi::Value hostEvalPositions(jsi::Runtime& rt, EngineState& st,
   return result;
 }
 
-jsi::Value hostSearchScored(jsi::Runtime& rt, EngineState& st,
+jsi::Value hostSearchScored(jsi::Runtime& rt, std::shared_ptr<EngineState> state,
+                            std::shared_ptr<react::CallInvoker> jsInvoker,
                             const jsi::Value& cellsValue,
                             const jsi::Value& aiValue,
                             const jsi::Value& depthValue,
@@ -225,14 +226,13 @@ jsi::Value hostSearchScored(jsi::Runtime& rt, EngineState& st,
   }
 
   std::string err;
-  if (!ensureLoaded(st, &err)) {
+  if (!ensureLoaded(*state, &err)) {
     throw jsi::JSError(rt, "TfmEngine searchScored: " + err);
   }
-  std::lock_guard<std::mutex> inferLock(st.infer);
   std::shared_ptr<tfm::Model> model;
   {
-    std::lock_guard<std::mutex> lock(st.mu);
-    model = st.model;
+    std::lock_guard<std::mutex> lock(state->mu);
+    model = state->model;
   }
 
   const int ai = static_cast<int>(aiValue.asNumber());
@@ -241,19 +241,85 @@ jsi::Value hostSearchScored(jsi::Runtime& rt, EngineState& st,
   const int maxNodes = static_cast<int>(maxNodesValue.asNumber());
   const double aggression = aggValue.asNumber();
 
-  const std::vector<tfm::ScoredMove> scored =
-      tfm::searchScored(*model, cells, n, ai, depth, topK, maxNodes, aggression);
+  auto buildResult = [&rt](const std::vector<tfm::ScoredMove>& scored) {
+    jsi::Object result(rt);
+    jsi::Array movesArr(rt, (int)scored.size());
+    jsi::Array valuesArr(rt, (int)scored.size());
+    for (size_t i = 0; i < scored.size(); ++i) {
+      movesArr.setValueAtIndex(rt, (int)i, scored[i].move);
+      valuesArr.setValueAtIndex(rt, (int)i, scored[i].value);
+    }
+    result.setProperty(rt, "moves", movesArr);
+    result.setProperty(rt, "values", valuesArr);
+    return result;
+  };
 
-  jsi::Object result(rt);
-  jsi::Array movesArr(rt, (int)scored.size());
-  jsi::Array valuesArr(rt, (int)scored.size());
-  for (size_t i = 0; i < scored.size(); ++i) {
-    movesArr.setValueAtIndex(rt, (int)i, scored[i].move);
-    valuesArr.setValueAtIndex(rt, (int)i, scored[i].value);
+  // Plain-JSI install (no CallInvoker): compute synchronously — the caller's
+  // `await` still works on the plain object.
+  if (!jsInvoker) {
+    std::lock_guard<std::mutex> inferLock(state->infer);
+    return buildResult(tfm::searchScored(*model, cells, n, ai, depth, topK,
+                                         maxNodes, aggression));
   }
-  result.setProperty(rt, "moves", movesArr);
-  result.setProperty(rt, "values", valuesArr);
-  return result;
+
+  // Run the whole lookahead OFF the JS thread and resolve a promise on it, so
+  // a slow 4x4x4/5x5x5 search never blocks the click/render path.
+  jsi::Function promiseCtor = rt.global().getPropertyAsFunction(rt, "Promise");
+  jsi::Function executor = jsi::Function::createFromHostFunction(
+      rt, jsi::PropNameID::forAscii(rt, "executor"), 2,
+      [state, jsInvoker, model, cells = std::move(cells), n, ai, depth, topK,
+       maxNodes, aggression](jsi::Runtime& runtime, const jsi::Value&,
+                             const jsi::Value* execArgs,
+                             size_t) -> jsi::Value {
+        auto resolve = std::make_shared<jsi::Function>(
+            execArgs[0].getObject(runtime).asFunction(runtime));
+        auto reject = std::make_shared<jsi::Function>(
+            execArgs[1].getObject(runtime).asFunction(runtime));
+        jsi::Runtime* rtPtr = &runtime;
+        std::thread([state, jsInvoker, model, resolve, reject, rtPtr, cells, n,
+                     ai, depth, topK, maxNodes, aggression]() {
+          try {
+            std::vector<tfm::ScoredMove> scored;
+            {
+              std::lock_guard<std::mutex> inferLock(state->infer);
+              scored = tfm::searchScored(*model, cells, n, ai, depth, topK,
+                                         maxNodes, aggression);
+            }
+            jsInvoker->invokeAsync(
+                [rtPtr, resolve, reject, scored = std::move(scored)]() {
+                  jsi::Runtime& rt2 = *rtPtr;
+                  try {
+                    jsi::Object result(rt2);
+                    jsi::Array movesArr(rt2, (int)scored.size());
+                    jsi::Array valuesArr(rt2, (int)scored.size());
+                    for (size_t i = 0; i < scored.size(); ++i) {
+                      movesArr.setValueAtIndex(rt2, (int)i, scored[i].move);
+                      valuesArr.setValueAtIndex(rt2, (int)i, scored[i].value);
+                    }
+                    result.setProperty(rt2, "moves", movesArr);
+                    result.setProperty(rt2, "values", valuesArr);
+                    resolve->call(rt2, result);
+                  } catch (const std::exception& e) {
+                    try {
+                      reject->call(rt2,
+                                   jsi::String::createFromUtf8(rt2, e.what()));
+                    } catch (...) {
+                    }
+                  }
+                });
+          } catch (const std::exception& e) {
+            std::string msg = e.what();
+            jsInvoker->invokeAsync([rtPtr, reject, msg]() {
+              try {
+                reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, msg));
+              } catch (...) {
+              }
+            });
+          }
+        }).detach();
+        return jsi::Value::undefined();
+      });
+  return promiseCtor.callAsConstructor(rt, executor);
 }
 
 jsi::Value hostPredictedLine(jsi::Runtime& rt, EngineState& st,
@@ -359,12 +425,15 @@ TfmMethod tfmMethodFromName(const std::string& n) {
 
 class TfmEngineHostObject : public jsi::HostObject {
  public:
-  TfmEngineHostObject() : state_(std::make_shared<EngineState>()) {}
+  explicit TfmEngineHostObject(std::shared_ptr<react::CallInvoker> jsInvoker)
+      : state_(std::make_shared<EngineState>()),
+        jsInvoker_(std::move(jsInvoker)) {}
 
   jsi::Value get(jsi::Runtime& rt, const jsi::PropNameID& name) override {
-    // Capture the shared_ptr (not a reference) so a function returned to JS
-    // keeps the engine alive even if the __TfmEngine global is dropped.
+    // Capture the shared_ptrs (not references) so a function returned to JS
+    // keeps the engine + invoker alive even if the global is dropped.
     std::shared_ptr<EngineState> state = state_;
+    std::shared_ptr<react::CallInvoker> jsInvoker = jsInvoker_;
     switch (tfmMethodFromName(name.utf8(rt))) {
       case TfmMethod::Load:
         return makeHostFunction(rt, name, 0, [state](jsi::Runtime& r,
@@ -391,12 +460,15 @@ class TfmEngineHostObject : public jsi::HostObject {
           return hostNumel(r, *state);
         });
       case TfmMethod::SearchScored:
-        return makeHostFunction(rt, name, 7, [state](jsi::Runtime& r,
-                                                     const jsi::Value* args,
-                                                     size_t) -> jsi::Value {
-          return hostSearchScored(r, *state, args[0], args[1], args[2], args[3],
-                                  args[4], args[5], args[6]);
-        });
+        return makeHostFunction(rt, name, 7,
+                                [state, jsInvoker](jsi::Runtime& r,
+                                                   const jsi::Value* args,
+                                                   size_t) -> jsi::Value {
+                                  return hostSearchScored(
+                                      r, state, jsInvoker, args[0], args[1],
+                                      args[2], args[3], args[4], args[5],
+                                      args[6]);
+                                });
       case TfmMethod::PredictedLine:
         return makeHostFunction(rt, name, 5, [state](jsi::Runtime& r,
                                                      const jsi::Value* args,
@@ -421,13 +493,16 @@ class TfmEngineHostObject : public jsi::HostObject {
 
  private:
   std::shared_ptr<EngineState> state_;
+  std::shared_ptr<react::CallInvoker> jsInvoker_;
 };
 
-void installTfmEngine(jsi::Runtime& runtime) {
+void installTfmEngine(jsi::Runtime& runtime,
+                      std::shared_ptr<react::CallInvoker> jsInvoker) {
   if (runtime.global().hasProperty(runtime, "__TfmEngine")) {
     return;
   }
-  auto host = std::make_shared<TfmEngineHostObject>();
+  auto host =
+      std::make_shared<TfmEngineHostObject>(std::move(jsInvoker));
   auto object = jsi::Object::createFromHostObject(runtime, host);
   runtime.global().setProperty(runtime, "__TfmEngine", std::move(object));
 }
@@ -450,15 +525,13 @@ TfmEngineTurboModule::TfmEngineTurboModule(
       react::TurboModule::MethodMetadata{0, &TfmEngineTurboModule::numelHost};
   methodMap_["searchScored"] = react::TurboModule::MethodMetadata{
       7, &TfmEngineTurboModule::searchScoredHost};
-  methodMap_["searchScoredAsync"] = react::TurboModule::MethodMetadata{
-      7, &TfmEngineTurboModule::searchScoredAsyncHost};
   methodMap_["predictedLine"] = react::TurboModule::MethodMetadata{
       5, &TfmEngineTurboModule::predictedLineHost};
 }
 
 void TfmEngineTurboModule::installJSIBindingsWithRuntime(
     jsi::Runtime& runtime) {
-  installTfmEngine(runtime);
+  installTfmEngine(runtime, jsInvoker_);
 }
 
 jsi::Value TfmEngineTurboModule::loadHost(
@@ -491,112 +564,8 @@ jsi::Value TfmEngineTurboModule::searchScoredHost(
     jsi::Runtime& rt, react::TurboModule& module, const jsi::Value* args,
     size_t) {
   auto& self = static_cast<TfmEngineTurboModule&>(module);
-  return hostSearchScored(rt, *self.state_, args[0], args[1], args[2], args[3],
-                          args[4], args[5], args[6]);
-}
-
-jsi::Value TfmEngineTurboModule::searchScoredAsyncHost(
-    jsi::Runtime& rt, react::TurboModule& module, const jsi::Value* args,
-    size_t) {
-  auto& self = static_cast<TfmEngineTurboModule&>(module);
-
-  // Parse + validate all args on the JS thread (cheap), then hand the plain
-  // data to a background thread so the JS thread / UI never blocks.
-  const int n = static_cast<int>(args[6].asNumber());
-  if (n < 1 || n > 6) {
-    throw jsi::JSError(rt, "TfmEngine searchScoredAsync: n must be in [1, 6]");
-  }
-  const size_t N = (size_t)n * n * n;
-  jsi::Array cellsArr = args[0].asObject(rt).asArray(rt);
-  if (cellsArr.length(rt) != N) {
-    throw jsi::JSError(rt,
-                       "TfmEngine searchScoredAsync: cells must have length n^3");
-  }
-  std::vector<int> cells(N);
-  for (size_t i = 0; i < N; ++i) {
-    const double c = cellsArr.getValueAtIndex(rt, (int)i).asNumber();
-    if (c < 0.0 || c > 2.0 || c != std::floor(c)) {
-      throw jsi::JSError(rt,
-                         "TfmEngine searchScoredAsync: cells must be {0,1,2}");
-    }
-    cells[i] = static_cast<int>(c);
-  }
-  const int ai = static_cast<int>(args[1].asNumber());
-  const int depth = static_cast<int>(args[2].asNumber());
-  const int topK = static_cast<int>(args[3].asNumber());
-  const int maxNodes = static_cast<int>(args[4].asNumber());
-  const double aggression = args[5].asNumber();
-
-  std::shared_ptr<EngineState> state = self.state_;
-  auto jsInvoker = self.jsInvoker_;
-
-  jsi::Function promiseCtor = rt.global().getPropertyAsFunction(rt, "Promise");
-  jsi::Function executor = jsi::Function::createFromHostFunction(
-      rt, jsi::PropNameID::forAscii(rt, "executor"), 2,
-      [state, jsInvoker, cells = std::move(cells), ai, depth, topK, maxNodes,
-       aggression, n](jsi::Runtime& runtime, const jsi::Value&,
-                      const jsi::Value* execArgs, size_t) -> jsi::Value {
-        // Runs synchronously on the JS thread when the Promise is constructed.
-        auto resolve = std::make_shared<jsi::Function>(
-            execArgs[0].getObject(runtime).asFunction(runtime));
-        auto reject = std::make_shared<jsi::Function>(
-            execArgs[1].getObject(runtime).asFunction(runtime));
-        jsi::Runtime* rtPtr = &runtime;
-        std::thread([state, jsInvoker, resolve, reject, rtPtr, cells, ai, depth,
-                     topK, maxNodes, aggression, n]() {
-          try {
-            std::string err;
-            if (!ensureLoaded(*state, &err)) {
-              throw std::runtime_error("TfmEngine searchScoredAsync: " + err);
-            }
-            std::shared_ptr<tfm::Model> model;
-            {
-              std::lock_guard<std::mutex> lock(state->mu);
-              model = state->model;
-            }
-            if (!model) {
-              throw std::runtime_error("TfmEngine searchScoredAsync: not loaded");
-            }
-            std::vector<tfm::ScoredMove> scored;
-            {
-              std::lock_guard<std::mutex> inferLock(state->infer);
-              scored = tfm::searchScored(*model, cells, n, ai, depth, topK,
-                                         maxNodes, aggression);
-            }
-            jsInvoker->invokeAsync([rtPtr, resolve, reject,
-                                    scored = std::move(scored)]() {
-              jsi::Runtime& rt = *rtPtr;
-              try {
-                jsi::Object result(rt);
-                jsi::Array movesArr(rt, (int)scored.size());
-                jsi::Array valuesArr(rt, (int)scored.size());
-                for (size_t i = 0; i < scored.size(); ++i) {
-                  movesArr.setValueAtIndex(rt, (int)i, scored[i].move);
-                  valuesArr.setValueAtIndex(rt, (int)i, scored[i].value);
-                }
-                result.setProperty(rt, "moves", movesArr);
-                result.setProperty(rt, "values", valuesArr);
-                resolve->call(rt, result);
-              } catch (const std::exception& e) {
-                try {
-                  reject->call(rt, jsi::String::createFromUtf8(rt, e.what()));
-                } catch (...) {
-                }
-              }
-            });
-          } catch (const std::exception& e) {
-            std::string msg = e.what();
-            jsInvoker->invokeAsync([rtPtr, reject, msg]() {
-              try {
-                reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, msg));
-              } catch (...) {
-              }
-            });
-          }
-        }).detach();
-        return jsi::Value::undefined();
-      });
-  return promiseCtor.callAsConstructor(rt, executor);
+  return hostSearchScored(rt, self.state_, self.jsInvoker_, args[0], args[1],
+                          args[2], args[3], args[4], args[5], args[6]);
 }
 
 jsi::Value TfmEngineTurboModule::predictedLineHost(

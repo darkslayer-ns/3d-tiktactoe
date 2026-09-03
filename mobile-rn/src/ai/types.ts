@@ -28,6 +28,46 @@ export interface EvalEngine {
     masks: readonly number[],
     n: number,
   ): { values: number[]; policies: number[] }
+  /**
+   * Optional native expectimax: scores every legal move on `cells` in ONE
+   * native call (the whole lookahead runs in C++). Returns parallel
+   * `moves`/`values` arrays in ascending index order. When absent, the mover
+   * falls back to the TS recursion.
+   */
+  searchScored?(
+    cells: readonly Cell[],
+    ai: Cell,
+    depth: number,
+    topK: number,
+    maxNodes: number,
+    aggression: number,
+    n: number,
+  ): { moves: number[]; values: number[] }
+  /**
+   * Async variant of searchScored: runs the lookahead on a background thread
+   * and resolves a Promise, so the JS thread / UI never blocks. When absent,
+   * callers fall back to the sync searchScored (then the recursion).
+   */
+  searchScoredAsync?(
+    cells: readonly Cell[],
+    ai: Cell,
+    depth: number,
+    topK: number,
+    maxNodes: number,
+    aggression: number,
+    n: number,
+  ): Promise<{ moves: number[]; values: number[] }>
+  /**
+   * Optional native predicted-line telemetry (greedy/likely continuation).
+   * When absent, the mover falls back to the TS loop.
+   */
+  predictedLine?(
+    cells: readonly Cell[],
+    ai: Cell,
+    chosen: number,
+    depth: number,
+    n: number,
+  ): { players: number[]; indices: number[] }
 }
 
 export interface GameConfig {

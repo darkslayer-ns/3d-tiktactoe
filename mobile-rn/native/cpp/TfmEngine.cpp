@@ -8,9 +8,11 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "tfm/model.hpp"
+#include "tfm/search.hpp"
 #include "tfm_memory_loader.hpp"
 #include "tfm_model_data.h"
 
@@ -24,6 +26,7 @@ using namespace facebook;
 
 struct EngineState {
   std::mutex mu;
+  std::mutex infer;  // serializes forward passes vs the background search
   std::shared_ptr<tfm::Model> model;
   bool loaded = false;
 };
@@ -100,6 +103,7 @@ jsi::Value hostEvalPosition(jsi::Runtime& rt, EngineState& st,
   if (!ensureLoaded(st, &err)) {
     throw jsi::JSError(rt, "TfmEngine evalPosition: " + err);
   }
+  std::lock_guard<std::mutex> inferLock(st.infer);
 
   // forward() is thread-safe (all temporaries are stack/local); copy the
   // shared model and run outside the lock.
@@ -170,6 +174,7 @@ jsi::Value hostEvalPositions(jsi::Runtime& rt, EngineState& st,
   if (!ensureLoaded(st, &err)) {
     throw jsi::JSError(rt, "TfmEngine evalPositions: " + err);
   }
+  std::lock_guard<std::mutex> inferLock(st.infer);
   std::shared_ptr<tfm::Model> model;
   {
     std::lock_guard<std::mutex> lock(st.mu);
@@ -193,6 +198,118 @@ jsi::Value hostEvalPositions(jsi::Runtime& rt, EngineState& st,
   return result;
 }
 
+jsi::Value hostSearchScored(jsi::Runtime& rt, EngineState& st,
+                            const jsi::Value& cellsValue,
+                            const jsi::Value& aiValue,
+                            const jsi::Value& depthValue,
+                            const jsi::Value& topKValue,
+                            const jsi::Value& maxNodesValue,
+                            const jsi::Value& aggValue,
+                            const jsi::Value& nValue) {
+  const int n = static_cast<int>(nValue.asNumber());
+  if (n < 1 || n > 6) {
+    throw jsi::JSError(rt, "TfmEngine searchScored: n must be in [1, 6]");
+  }
+  const size_t N = (size_t)n * n * n;
+  jsi::Array cellsArr = cellsValue.asObject(rt).asArray(rt);
+  if (cellsArr.length(rt) != N) {
+    throw jsi::JSError(rt, "TfmEngine searchScored: cells must have length n^3");
+  }
+  std::vector<int> cells(N);
+  for (size_t i = 0; i < N; ++i) {
+    const double c = cellsArr.getValueAtIndex(rt, (int)i).asNumber();
+    if (c < 0.0 || c > 2.0 || c != std::floor(c)) {
+      throw jsi::JSError(rt, "TfmEngine searchScored: cells must be {0,1,2}");
+    }
+    cells[i] = static_cast<int>(c);
+  }
+
+  std::string err;
+  if (!ensureLoaded(st, &err)) {
+    throw jsi::JSError(rt, "TfmEngine searchScored: " + err);
+  }
+  std::lock_guard<std::mutex> inferLock(st.infer);
+  std::shared_ptr<tfm::Model> model;
+  {
+    std::lock_guard<std::mutex> lock(st.mu);
+    model = st.model;
+  }
+
+  const int ai = static_cast<int>(aiValue.asNumber());
+  const int depth = static_cast<int>(depthValue.asNumber());
+  const int topK = static_cast<int>(topKValue.asNumber());
+  const int maxNodes = static_cast<int>(maxNodesValue.asNumber());
+  const double aggression = aggValue.asNumber();
+
+  const std::vector<tfm::ScoredMove> scored =
+      tfm::searchScored(*model, cells, n, ai, depth, topK, maxNodes, aggression);
+
+  jsi::Object result(rt);
+  jsi::Array movesArr(rt, (int)scored.size());
+  jsi::Array valuesArr(rt, (int)scored.size());
+  for (size_t i = 0; i < scored.size(); ++i) {
+    movesArr.setValueAtIndex(rt, (int)i, scored[i].move);
+    valuesArr.setValueAtIndex(rt, (int)i, scored[i].value);
+  }
+  result.setProperty(rt, "moves", movesArr);
+  result.setProperty(rt, "values", valuesArr);
+  return result;
+}
+
+jsi::Value hostPredictedLine(jsi::Runtime& rt, EngineState& st,
+                             const jsi::Value& cellsValue,
+                             const jsi::Value& aiValue,
+                             const jsi::Value& chosenValue,
+                             const jsi::Value& depthValue,
+                             const jsi::Value& nValue) {
+  const int n = static_cast<int>(nValue.asNumber());
+  if (n < 1 || n > 6) {
+    throw jsi::JSError(rt, "TfmEngine predictedLine: n must be in [1, 6]");
+  }
+  const size_t N = (size_t)n * n * n;
+  jsi::Array cellsArr = cellsValue.asObject(rt).asArray(rt);
+  if (cellsArr.length(rt) != N) {
+    throw jsi::JSError(rt, "TfmEngine predictedLine: cells must have length n^3");
+  }
+  std::vector<int> cells(N);
+  for (size_t i = 0; i < N; ++i) {
+    const double c = cellsArr.getValueAtIndex(rt, (int)i).asNumber();
+    if (c < 0.0 || c > 2.0 || c != std::floor(c)) {
+      throw jsi::JSError(rt, "TfmEngine predictedLine: cells must be {0,1,2}");
+    }
+    cells[i] = static_cast<int>(c);
+  }
+
+  std::string err;
+  if (!ensureLoaded(st, &err)) {
+    throw jsi::JSError(rt, "TfmEngine predictedLine: " + err);
+  }
+  std::lock_guard<std::mutex> inferLock(st.infer);
+  std::shared_ptr<tfm::Model> model;
+  {
+    std::lock_guard<std::mutex> lock(st.mu);
+    model = st.model;
+  }
+
+  const int ai = static_cast<int>(aiValue.asNumber());
+  const int chosen = static_cast<int>(chosenValue.asNumber());
+  const int depth = static_cast<int>(depthValue.asNumber());
+
+  const std::vector<tfm::LineStep> line =
+      tfm::predictedLine(*model, cells, n, ai, chosen, depth);
+
+  jsi::Object result(rt);
+  jsi::Array playersArr(rt, (int)line.size());
+  jsi::Array indicesArr(rt, (int)line.size());
+  for (size_t i = 0; i < line.size(); ++i) {
+    playersArr.setValueAtIndex(rt, (int)i, line[i].player);
+    indicesArr.setValueAtIndex(rt, (int)i, line[i].index);
+  }
+  result.setProperty(rt, "players", playersArr);
+  result.setProperty(rt, "indices", indicesArr);
+  return result;
+}
+
 jsi::Value makeHostFunction(
     jsi::Runtime& rt, const jsi::PropNameID& name, unsigned int argCount,
     std::function<jsi::Value(jsi::Runtime&, const jsi::Value*, size_t)> fn) {
@@ -210,52 +327,95 @@ jsi::Value makeHostFunction(
 // HostObject installed as globalThis.__TfmEngine.
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// Resolve a JS property name to its type-safe method enum exactly once. The
+// enum + its JS name live side-by-side in ONE table, and the host-object
+// dispatch below switches on the result. (C++ cannot switch on a string or a
+// jsi::PropNameID, so this name→enum lookup is the single unavoidable point.)
+struct MethodEntry {
+  TfmMethod method;
+  const char* name;
+};
+
+constexpr MethodEntry kMethodTable[] = {
+    {TfmMethod::Load, "load"},
+    {TfmMethod::EvalPosition, "evalPosition"},
+    {TfmMethod::EvalPositions, "evalPositions"},
+    {TfmMethod::Numel, "numel"},
+    {TfmMethod::SearchScored, "searchScored"},
+    {TfmMethod::PredictedLine, "predictedLine"},
+};
+constexpr size_t kMethodCount = sizeof(kMethodTable) / sizeof(kMethodTable[0]);
+
+TfmMethod tfmMethodFromName(const std::string& n) {
+  for (const auto& e : kMethodTable) {
+    if (n == e.name) return e.method;
+  }
+  return TfmMethod::Unknown;
+}
+
+}  // namespace
+
 class TfmEngineHostObject : public jsi::HostObject {
  public:
   TfmEngineHostObject() : state_(std::make_shared<EngineState>()) {}
 
   jsi::Value get(jsi::Runtime& rt, const jsi::PropNameID& name) override {
-    const std::string n = name.utf8(rt);
     // Capture the shared_ptr (not a reference) so a function returned to JS
     // keeps the engine alive even if the __TfmEngine global is dropped.
     std::shared_ptr<EngineState> state = state_;
-    if (n == "load") {
-      return makeHostFunction(rt, name, 0, [state](jsi::Runtime& r,
-                                                   const jsi::Value*,
-                                                   size_t) -> jsi::Value {
-        return hostLoad(r, *state);
-      });
+    switch (tfmMethodFromName(name.utf8(rt))) {
+      case TfmMethod::Load:
+        return makeHostFunction(rt, name, 0, [state](jsi::Runtime& r,
+                                                     const jsi::Value*,
+                                                     size_t) -> jsi::Value {
+          return hostLoad(r, *state);
+        });
+      case TfmMethod::EvalPosition:
+        return makeHostFunction(rt, name, 3, [state](jsi::Runtime& r,
+                                                     const jsi::Value* args,
+                                                     size_t) -> jsi::Value {
+          return hostEvalPosition(r, *state, args[0], args[1], args[2]);
+        });
+      case TfmMethod::EvalPositions:
+        return makeHostFunction(rt, name, 3, [state](jsi::Runtime& r,
+                                                     const jsi::Value* args,
+                                                     size_t) -> jsi::Value {
+          return hostEvalPositions(r, *state, args[0], args[1], args[2]);
+        });
+      case TfmMethod::Numel:
+        return makeHostFunction(rt, name, 0, [state](jsi::Runtime& r,
+                                                     const jsi::Value*,
+                                                     size_t) -> jsi::Value {
+          return hostNumel(r, *state);
+        });
+      case TfmMethod::SearchScored:
+        return makeHostFunction(rt, name, 7, [state](jsi::Runtime& r,
+                                                     const jsi::Value* args,
+                                                     size_t) -> jsi::Value {
+          return hostSearchScored(r, *state, args[0], args[1], args[2], args[3],
+                                  args[4], args[5], args[6]);
+        });
+      case TfmMethod::PredictedLine:
+        return makeHostFunction(rt, name, 5, [state](jsi::Runtime& r,
+                                                     const jsi::Value* args,
+                                                     size_t) -> jsi::Value {
+          return hostPredictedLine(r, *state, args[0], args[1], args[2],
+                                   args[3], args[4]);
+        });
+      case TfmMethod::Unknown:
+      default:
+        return jsi::Value::undefined();
     }
-    if (n == "evalPosition") {
-      return makeHostFunction(rt, name, 3, [state](jsi::Runtime& r,
-                                                   const jsi::Value* args,
-                                                   size_t) -> jsi::Value {
-        return hostEvalPosition(r, *state, args[0], args[1], args[2]);
-      });
-    }
-    if (n == "evalPositions") {
-      return makeHostFunction(rt, name, 3, [state](jsi::Runtime& r,
-                                                   const jsi::Value* args,
-                                                   size_t) -> jsi::Value {
-        return hostEvalPositions(r, *state, args[0], args[1], args[2]);
-      });
-    }
-    if (n == "numel") {
-      return makeHostFunction(rt, name, 0, [state](jsi::Runtime& r,
-                                                   const jsi::Value*,
-                                                   size_t) -> jsi::Value {
-        return hostNumel(r, *state);
-      });
-    }
-    return jsi::Value::undefined();
   }
 
   std::vector<jsi::PropNameID> getPropertyNames(jsi::Runtime& rt) override {
     std::vector<jsi::PropNameID> names;
-    names.push_back(jsi::PropNameID::forUtf8(rt, "load"));
-    names.push_back(jsi::PropNameID::forUtf8(rt, "evalPosition"));
-    names.push_back(jsi::PropNameID::forUtf8(rt, "evalPositions"));
-    names.push_back(jsi::PropNameID::forUtf8(rt, "numel"));
+    names.reserve(kMethodCount);
+    for (const auto& e : kMethodTable) {
+      names.push_back(jsi::PropNameID::forUtf8(rt, e.name));
+    }
     return names;
   }
 
@@ -288,6 +448,12 @@ TfmEngineTurboModule::TfmEngineTurboModule(
       3, &TfmEngineTurboModule::evalPositionsHost};
   methodMap_["numel"] =
       react::TurboModule::MethodMetadata{0, &TfmEngineTurboModule::numelHost};
+  methodMap_["searchScored"] = react::TurboModule::MethodMetadata{
+      7, &TfmEngineTurboModule::searchScoredHost};
+  methodMap_["searchScoredAsync"] = react::TurboModule::MethodMetadata{
+      7, &TfmEngineTurboModule::searchScoredAsyncHost};
+  methodMap_["predictedLine"] = react::TurboModule::MethodMetadata{
+      5, &TfmEngineTurboModule::predictedLineHost};
 }
 
 void TfmEngineTurboModule::installJSIBindingsWithRuntime(
@@ -319,6 +485,126 @@ jsi::Value TfmEngineTurboModule::numelHost(
     jsi::Runtime& rt, react::TurboModule& module, const jsi::Value*, size_t) {
   auto& self = static_cast<TfmEngineTurboModule&>(module);
   return hostNumel(rt, *self.state_);
+}
+
+jsi::Value TfmEngineTurboModule::searchScoredHost(
+    jsi::Runtime& rt, react::TurboModule& module, const jsi::Value* args,
+    size_t) {
+  auto& self = static_cast<TfmEngineTurboModule&>(module);
+  return hostSearchScored(rt, *self.state_, args[0], args[1], args[2], args[3],
+                          args[4], args[5], args[6]);
+}
+
+jsi::Value TfmEngineTurboModule::searchScoredAsyncHost(
+    jsi::Runtime& rt, react::TurboModule& module, const jsi::Value* args,
+    size_t) {
+  auto& self = static_cast<TfmEngineTurboModule&>(module);
+
+  // Parse + validate all args on the JS thread (cheap), then hand the plain
+  // data to a background thread so the JS thread / UI never blocks.
+  const int n = static_cast<int>(args[6].asNumber());
+  if (n < 1 || n > 6) {
+    throw jsi::JSError(rt, "TfmEngine searchScoredAsync: n must be in [1, 6]");
+  }
+  const size_t N = (size_t)n * n * n;
+  jsi::Array cellsArr = args[0].asObject(rt).asArray(rt);
+  if (cellsArr.length(rt) != N) {
+    throw jsi::JSError(rt,
+                       "TfmEngine searchScoredAsync: cells must have length n^3");
+  }
+  std::vector<int> cells(N);
+  for (size_t i = 0; i < N; ++i) {
+    const double c = cellsArr.getValueAtIndex(rt, (int)i).asNumber();
+    if (c < 0.0 || c > 2.0 || c != std::floor(c)) {
+      throw jsi::JSError(rt,
+                         "TfmEngine searchScoredAsync: cells must be {0,1,2}");
+    }
+    cells[i] = static_cast<int>(c);
+  }
+  const int ai = static_cast<int>(args[1].asNumber());
+  const int depth = static_cast<int>(args[2].asNumber());
+  const int topK = static_cast<int>(args[3].asNumber());
+  const int maxNodes = static_cast<int>(args[4].asNumber());
+  const double aggression = args[5].asNumber();
+
+  std::shared_ptr<EngineState> state = self.state_;
+  auto jsInvoker = self.jsInvoker_;
+
+  jsi::Function promiseCtor = rt.global().getPropertyAsFunction(rt, "Promise");
+  jsi::Function executor = jsi::Function::createFromHostFunction(
+      rt, jsi::PropNameID::forAscii(rt, "executor"), 2,
+      [state, jsInvoker, cells = std::move(cells), ai, depth, topK, maxNodes,
+       aggression, n](jsi::Runtime& runtime, const jsi::Value&,
+                      const jsi::Value* execArgs, size_t) -> jsi::Value {
+        // Runs synchronously on the JS thread when the Promise is constructed.
+        auto resolve = std::make_shared<jsi::Function>(
+            execArgs[0].getObject(runtime).asFunction(runtime));
+        auto reject = std::make_shared<jsi::Function>(
+            execArgs[1].getObject(runtime).asFunction(runtime));
+        jsi::Runtime* rtPtr = &runtime;
+        std::thread([state, jsInvoker, resolve, reject, rtPtr, cells, ai, depth,
+                     topK, maxNodes, aggression, n]() {
+          try {
+            std::string err;
+            if (!ensureLoaded(*state, &err)) {
+              throw std::runtime_error("TfmEngine searchScoredAsync: " + err);
+            }
+            std::shared_ptr<tfm::Model> model;
+            {
+              std::lock_guard<std::mutex> lock(state->mu);
+              model = state->model;
+            }
+            if (!model) {
+              throw std::runtime_error("TfmEngine searchScoredAsync: not loaded");
+            }
+            std::vector<tfm::ScoredMove> scored;
+            {
+              std::lock_guard<std::mutex> inferLock(state->infer);
+              scored = tfm::searchScored(*model, cells, n, ai, depth, topK,
+                                         maxNodes, aggression);
+            }
+            jsInvoker->invokeAsync([rtPtr, resolve, reject,
+                                    scored = std::move(scored)]() {
+              jsi::Runtime& rt = *rtPtr;
+              try {
+                jsi::Object result(rt);
+                jsi::Array movesArr(rt, (int)scored.size());
+                jsi::Array valuesArr(rt, (int)scored.size());
+                for (size_t i = 0; i < scored.size(); ++i) {
+                  movesArr.setValueAtIndex(rt, (int)i, scored[i].move);
+                  valuesArr.setValueAtIndex(rt, (int)i, scored[i].value);
+                }
+                result.setProperty(rt, "moves", movesArr);
+                result.setProperty(rt, "values", valuesArr);
+                resolve->call(rt, result);
+              } catch (const std::exception& e) {
+                try {
+                  reject->call(rt, jsi::String::createFromUtf8(rt, e.what()));
+                } catch (...) {
+                }
+              }
+            });
+          } catch (const std::exception& e) {
+            std::string msg = e.what();
+            jsInvoker->invokeAsync([rtPtr, reject, msg]() {
+              try {
+                reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, msg));
+              } catch (...) {
+              }
+            });
+          }
+        }).detach();
+        return jsi::Value::undefined();
+      });
+  return promiseCtor.callAsConstructor(rt, executor);
+}
+
+jsi::Value TfmEngineTurboModule::predictedLineHost(
+    jsi::Runtime& rt, react::TurboModule& module, const jsi::Value* args,
+    size_t) {
+  auto& self = static_cast<TfmEngineTurboModule&>(module);
+  return hostPredictedLine(rt, *self.state_, args[0], args[1], args[2], args[3],
+                           args[4]);
 }
 
 }  // namespace tfmengine

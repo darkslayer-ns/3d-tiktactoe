@@ -258,7 +258,7 @@ TfmEngineRegistrar g_tfmEngineRegistrar;
 }  // namespace
 `;
 
-const IOS_ENGINE_SOURCES = ['model.cpp', 'ops.cpp', 'layers.cpp', 'weights.cpp'];
+const IOS_ENGINE_SOURCES = ['model.cpp', 'ops.cpp', 'layers.cpp', 'weights.cpp', 'search.cpp'];
 
 // Header paths the app target needs to #import <TfmEngine.h> and the
 // react/nativemodule headers from the node_modules ReactCommon tree.

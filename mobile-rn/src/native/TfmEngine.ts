@@ -27,6 +27,31 @@ interface TfmEngineNative {
   evalPosition: (board: number[], mask: number[], n: number) => TfmResult
   evalPositions: (boards: number[], masks: number[], n: number) => TfmBatchResult
   numel: () => number
+  searchScored: (
+    cells: number[],
+    ai: number,
+    depth: number,
+    topK: number,
+    maxNodes: number,
+    aggression: number,
+    n: number,
+  ) => { moves: number[]; values: number[] }
+  searchScoredAsync?: (
+    cells: number[],
+    ai: number,
+    depth: number,
+    topK: number,
+    maxNodes: number,
+    aggression: number,
+    n: number,
+  ) => Promise<{ moves: number[]; values: number[] }>
+  predictedLine: (
+    cells: number[],
+    ai: number,
+    chosen: number,
+    depth: number,
+    n: number,
+  ) => { players: number[]; indices: number[] }
 }
 
 /**
@@ -118,4 +143,64 @@ export function numel(): number {
   } catch {
     return -1
   }
+}
+
+/**
+ * Native expectimax: scores every legal move on `cells` (raw {0,1,2}) in one
+ * native call. Returns parallel `moves`/`values` arrays in ascending index
+ * order. Throws when the native module is unavailable.
+ */
+export function searchScored(
+  cells: number[],
+  ai: number,
+  depth: number,
+  topK: number,
+  maxNodes: number,
+  aggression: number,
+  n: number,
+): { moves: number[]; values: number[] } {
+  const N = native()
+  if (!N) throw new Error('TfmEngine not available')
+  return N.searchScored(cells, ai, depth, topK, maxNodes, aggression, n)
+}
+
+/**
+ * Async search: routed through the TurboModule proxy, which runs the whole
+ * lookahead on a background thread and resolves a Promise (the JS thread / UI
+ * stays responsive). Falls back to the sync host search if the async method
+ * isn't exposed.
+ */
+export function searchScoredAsync(
+  cells: number[],
+  ai: number,
+  depth: number,
+  topK: number,
+  maxNodes: number,
+  aggression: number,
+  n: number,
+): Promise<{ moves: number[]; values: number[] }> {
+  const g = globalThis as any
+  const proxy = g.nativeModuleProxy?.TfmEngine
+  if (proxy && typeof proxy.searchScoredAsync === 'function') {
+    return proxy.searchScoredAsync(cells, ai, depth, topK, maxNodes, aggression, n)
+  }
+  return Promise.resolve().then(() =>
+    searchScored(cells, ai, depth, topK, maxNodes, aggression, n),
+  )
+}
+
+/**
+ * Native predicted-line telemetry (greedy/likely continuation after `chosen`).
+ * Throws when the native module is unavailable.
+ */
+export function predictedLine(
+  cells: number[],
+  ai: number,
+  chosen: number,
+  depth: number,
+  n: number,
+): { players: number[]; indices: number[] } {
+  const N = native()
+  if (!N) throw new Error('TfmEngine not available')
+  return N.predictedLine(cells, ai, chosen, depth, n)
 }

@@ -65,6 +65,7 @@ add_library(tfm_engine STATIC
   "${TFM_REPO_ROOT}/cpp/src/layers.cpp"
   "${TFM_REPO_ROOT}/cpp/src/model.cpp"
   "${TFM_REPO_ROOT}/cpp/src/weights.cpp"
+  "${TFM_REPO_ROOT}/cpp/src/search.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/cpp/TfmEngine.cpp"
 )
 

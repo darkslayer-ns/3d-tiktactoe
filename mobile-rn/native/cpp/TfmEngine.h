@@ -12,6 +12,21 @@ namespace tfmengine {
 // Shared, mutex-guarded model holder. Definition lives in TfmEngine.cpp.
 struct EngineState;
 
+/**
+ * Property names exposed by the `globalThis.__TfmEngine` host object, as a
+ * type-safe enum. The JSI `get` dispatch resolves a `PropNameID` to one of
+ * these once, then switches on it — no repeated string comparisons.
+ */
+enum class TfmMethod {
+  Unknown,
+  Load,
+  EvalPosition,
+  EvalPositions,
+  Numel,
+  SearchScored,
+  PredictedLine,
+};
+
 // Installs `globalThis.__TfmEngine`, a jsi::HostObject exposing the three host
 // functions (load / evalPosition / numel) that wrap the compiled tfm::Model
 // engine. Idempotent. The JS side (src/native/TfmEngine.ts) reads exactly this
@@ -55,6 +70,23 @@ class TfmEngineTurboModule
       const facebook::jsi::Value* args,
       size_t count);
   static facebook::jsi::Value numelHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
+  static facebook::jsi::Value searchScoredHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
+  /** Async variant of searchScoredHost: runs the search on a background thread
+   *  and resolves a JS Promise (keeps the JS thread / UI responsive). */
+  static facebook::jsi::Value searchScoredAsyncHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
+  static facebook::jsi::Value predictedLineHost(
       facebook::jsi::Runtime& rt,
       facebook::react::TurboModule& module,
       const facebook::jsi::Value* args,

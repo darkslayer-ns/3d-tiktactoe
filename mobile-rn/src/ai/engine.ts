@@ -10,7 +10,15 @@
 
 import type { Cell } from '../game/types'
 import type { EvalEngine, EvalResult } from './types'
-import { evalPosition, evalPositions, isAvailable, load } from '../native/TfmEngine'
+import {
+  evalPosition,
+  evalPositions,
+  isAvailable,
+  load,
+  predictedLine,
+  searchScored,
+  searchScoredAsync,
+} from '../native/TfmEngine'
 
 /**
  * Bounded LRU over normalized board signatures. The search calls evalPosition
@@ -76,6 +84,40 @@ class NativeEngine implements EvalEngine {
     n: number,
   ): { values: number[]; policies: number[] } {
     return evalPositions(boards as number[], masks as number[], n)
+  }
+
+  searchScored(
+    cells: readonly Cell[],
+    ai: Cell,
+    depth: number,
+    topK: number,
+    maxNodes: number,
+    aggression: number,
+    n: number,
+  ): { moves: number[]; values: number[] } {
+    return searchScored(cells as number[], ai, depth, topK, maxNodes, aggression, n)
+  }
+
+  async searchScoredAsync(
+    cells: readonly Cell[],
+    ai: Cell,
+    depth: number,
+    topK: number,
+    maxNodes: number,
+    aggression: number,
+    n: number,
+  ): Promise<{ moves: number[]; values: number[] }> {
+    return searchScoredAsync(cells as number[], ai, depth, topK, maxNodes, aggression, n)
+  }
+
+  predictedLine(
+    cells: readonly Cell[],
+    ai: Cell,
+    chosen: number,
+    depth: number,
+    n: number,
+  ): { players: number[]; indices: number[] } {
+    return predictedLine(cells as number[], ai, chosen, depth, n)
   }
 }
 

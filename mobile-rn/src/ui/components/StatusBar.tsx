@@ -3,8 +3,7 @@
  * or the win/draw result with a "Play again" button.
  */
 
-import { useEffect, useRef } from 'react'
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { Theme, fontSize, radius, spacing } from '../theme'
 import type { GameState } from '../../ai/types'
 import { EMPTY, P1, type Cell } from '../../game/types'
@@ -30,26 +29,12 @@ export function StatusBar({
   onHint,
   onUndo,
 }: StatusBarProps) {
-  const pulse = useRef(new Animated.Value(1)).current
-
-  useEffect(() => {
-    if (!state.thinking) return
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 0.35, duration: 380, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 1, duration: 380, useNativeDriver: true }),
-      ]),
-    )
-    loop.start()
-    return () => loop.stop()
-  }, [state.thinking, pulse])
-
-  const renderMark = (player: Cell, animating = false) => {
+  const renderMark = (player: Cell) => {
     const accent = player === P1 ? Theme.cyan : Theme.pink
     return (
-      <Animated.View style={[styles.badge, { borderColor: accent, opacity: animating ? pulse : 1 }]}>
+      <View style={[styles.badge, { borderColor: accent }]}>
         <Text style={[styles.badgeText, { color: accent }]}>{markOf(player)}</Text>
-      </Animated.View>
+      </View>
     )
   }
 
@@ -83,10 +68,12 @@ export function StatusBar({
   const accent = player === P1 ? Theme.cyan : Theme.pink
   return (
     <View style={styles.bar}>
-      {renderMark(player, state.thinking)}
-      <Text style={[styles.text, { color: accent }]}>
-        {isHumanTurn ? 'Your turn' : "Opponent's turn"}
-      </Text>
+      {isHumanTurn && (
+        <>
+          {renderMark(player)}
+          <Text style={[styles.text, { color: accent }]}>Your turn</Text>
+        </>
+      )}
       <View style={styles.actions}>
         {isHumanTurn && onHint != null && (
           <Pressable onPress={onHint} style={styles.hint}>

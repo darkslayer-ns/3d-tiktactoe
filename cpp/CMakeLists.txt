@@ -15,7 +15,8 @@ add_library(tfm_core OBJECT
   src/ops.cpp
   src/layers.cpp
   src/model.cpp
-  src/weights.cpp)
+  src/weights.cpp
+  src/search.cpp)
 target_include_directories(tfm_core PUBLIC include)
 set_target_properties(tfm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -40,4 +41,9 @@ enable_testing()
 add_executable(parity_test tests/parity.cpp)
 target_link_libraries(parity_test tfm m)
 add_test(NAME parity COMMAND parity_test
+  ${CMAKE_SOURCE_DIR}/model.bin ${CMAKE_SOURCE_DIR}/fixtures)
+
+add_executable(search_parity_test tests/search_parity.cpp)
+target_link_libraries(search_parity_test tfm m)
+add_test(NAME search_parity COMMAND search_parity_test
   ${CMAKE_SOURCE_DIR}/model.bin ${CMAKE_SOURCE_DIR}/fixtures)

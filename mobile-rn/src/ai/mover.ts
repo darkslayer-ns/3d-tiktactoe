@@ -675,6 +675,15 @@ export class LookaheadMover {
 
   /** Best-guess future line if the AI plays `chosen`. */
   private _predictedLine(ai: Cell, chosen: number): LineStep[] {
+    const native = this._require().predictedLine
+    if (native) {
+      const r = native(this.board.cells, ai, chosen, this.depth, this.board.n)
+      return r.indices.map((idx, i) => ({
+        player: r.players[i] as Cell,
+        index: idx,
+        coord: this.board.coord(idx),
+      }))
+    }
     const rb = new Board(this.board.n, this.board.cells)
     const line: LineStep[] = [{ player: ai, index: chosen, coord: rb.coord(chosen) }]
     rb.apply(chosen, ai)
@@ -807,6 +816,38 @@ export class LookaheadMover {
     const depth = depthOverride ?? this.depth
     if (depth <= 1 && this._require().evalPositions) {
       return this._scoredBatched(ai, moves, search)
+    }
+    const eng = this._require()
+    // Native expectimax: the whole depth>1 lookahead runs in one C++ call. The
+    // async variant runs it on a background thread so the UI never blocks.
+    if (eng.searchScoredAsync) {
+      const r = await eng.searchScoredAsync(
+        search.cells,
+        ai,
+        depth,
+        this.topK,
+        this._effMaxNodes(),
+        this.aggression,
+        search.n,
+      )
+      const out: Array<[number, number]> = []
+      for (let i = 0; i < r.moves.length; i++) out.push([r.moves[i], r.values[i]])
+      return out
+    }
+    const native = eng.searchScored
+    if (native) {
+      const r = native(
+        search.cells,
+        ai,
+        depth,
+        this.topK,
+        this._effMaxNodes(),
+        this.aggression,
+        search.n,
+      )
+      const out: Array<[number, number]> = []
+      for (let i = 0; i < r.moves.length; i++) out.push([r.moves[i], r.values[i]])
+      return out
     }
     const out: Array<[number, number]> = []
     for (const m of moves) {

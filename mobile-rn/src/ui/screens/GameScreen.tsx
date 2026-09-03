@@ -31,8 +31,8 @@ import { emptyState, type EvalEngine, type GameConfig, type GameState } from '..
 import { IS_INTERNAL_BUILD } from '../../dev/internalBuild'
 import { ModelKnowledgePanel } from '../../dev/ModelKnowledgePanel'
 
-/** Short delay so "AI thinking…" is actually visible before the move lands. */
-const AI_DELAY_MS = 350
+/** Show "AI thinking…" only if the engine hasn't replied within this long. */
+const THINK_PAINT_MS = 100
 
 const ENGINE_UNAVAILABLE_MSG =
   'Model engine not available — build with expo run:android/ios'
@@ -149,23 +149,29 @@ export function GameScreen() {
     [persistAffinity],
   )
 
-  const runAITurn = useCallback(() => {
+const runAITurn = useCallback(async () => {
     if (!boardRef.current || !moverRef.current || !predictorRef.current) return
     if (overRef.current || thinkingRef.current) return
     const aiSide: Cell = humanSideRef.current === P1 ? P2 : P1
     thinkingRef.current = true
-    setSnap((prev) => ({ ...prev, thinking: true }))
     if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(async () => {
-      const board = boardRef.current
-      const mover = moverRef.current
-      const predictor = predictorRef.current
-      if (!board || !mover || !predictor) return
+    // No artificial wait: show "thinking" only if the engine hasn't replied
+    // within THINK_PAINT_MS — fast moves land with no indicator at all.
+    timerRef.current = setTimeout(() => {
+      setSnap((prev) => (prev.thinking ? prev : { ...prev, thinking: true }))
+    }, THINK_PAINT_MS)
+    const board = boardRef.current
+    const mover = moverRef.current
+    const predictor = predictorRef.current
+    if (!board || !mover || !predictor) return
+    if (overRef.current) return
+    try {
+      const move = await mover.chooseMove(aiSide)
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = null
+      thinkingRef.current = false
       if (overRef.current) return
-      try {
-        const move = await mover.chooseMove(aiSide)
-        if (overRef.current) return
-        board.apply(move, aiSide)
+      board.apply(move, aiSide)
         predictor.record(aiSide, move)
         movesRef.current.push(move)
         const outcome = board.outcome()
@@ -189,7 +195,6 @@ export function GameScreen() {
         thinkingRef.current = false
         setSnap((prev) => ({ ...prev, thinking: false }))
       }
-    }, AI_DELAY_MS)
   }, [endGame])
 
   // AI-vs-AI demo: plays the whole game by itself so the core loop can be
@@ -539,7 +544,7 @@ const showHowTo = useCallback(
       {!snap.demo && (
         <View style={styles.bottom}>
           <StatusBar
-            state={resultVisible || !snap.over ? snap : { ...snap, over: false, winner: EMPTY }}
+            state={snap}
             humanSide={config.humanSide}
             onPlayAgain={playAgain}
             onNewGame={openMenu}

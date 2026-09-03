@@ -84,10 +84,12 @@ target_include_directories(tfm_engine PUBLIC
 # -I here, which avoids pulling in a duplicate TurboModule.h and causing
 # redefinition errors.
 
-# Engine sources: C++17, -fPIC, no fast-math. OpenMP parallelizes the
-# attention head loop + batched evals across the phone's cores (Android).
+# Engine sources: C++17, -fPIC, no fast-math (parity). OpenMP parallelizes the
+# attention head loop + batched evals across the phone's cores (Android);
+# -O3 + armv8-a+dotprod give the Eigen GEMMs the extra SIMD instructions.
 # `-fopenmp` is PUBLIC so it also reaches the final libappmodules.so link.
-target_compile_options(tfm_engine PRIVATE -fPIC -O2 -fexceptions -frtti -fopenmp)
+target_compile_options(tfm_engine PRIVATE
+  -fPIC -O3 -fexceptions -frtti -fopenmp -march=armv8-a+dotprod)
 # Static libomp so the OpenMP symbols bake into libappmodules.so (no
 # libomp.so to ship, avoiding a runtime dlopen failure on-device).
 target_link_libraries(tfm_engine PUBLIC -Wl,-Bstatic -lomp -Wl,-Bdynamic)

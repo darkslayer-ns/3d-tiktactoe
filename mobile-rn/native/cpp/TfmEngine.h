@@ -27,11 +27,18 @@ enum class TfmMethod {
   PredictedLine,
 };
 
-// Installs `globalThis.__TfmEngine`, a jsi::HostObject exposing the three host
-// functions (load / evalPosition / numel) that wrap the compiled tfm::Model
-// engine. Idempotent. The JS side (src/native/TfmEngine.ts) reads exactly this
-// global name.
-void installTfmEngine(facebook::jsi::Runtime& runtime);
+// Installs `globalThis.__TfmEngine`, a jsi::HostObject exposing the host
+// functions (load / evalPosition / numel / searchScored / predictedLine) that
+// wrap the compiled tfm::Model engine. Idempotent. The JS side
+// (src/native/TfmEngine.ts) reads exactly this global name.
+//
+// `jsInvoker` enables ASYNC `searchScored`: the heavy lookahead runs on a
+// background thread and resolves a JS promise on the JS thread, so a slow
+// 4x4x4/5x5x5 search never blocks the click/render path. Pass nullptr (the
+// default, a plain-JSI install without a TurboModule) for a synchronous
+// fallback.
+void installTfmEngine(facebook::jsi::Runtime& runtime,
+                      std::shared_ptr<facebook::react::CallInvoker> jsInvoker = nullptr);
 
 // C++ TurboModule glue for the New Architecture. When JS first requests the
 // "TfmEngine" module, the runtime installs the JSI bindings above (via
@@ -75,13 +82,6 @@ class TfmEngineTurboModule
       const facebook::jsi::Value* args,
       size_t count);
   static facebook::jsi::Value searchScoredHost(
-      facebook::jsi::Runtime& rt,
-      facebook::react::TurboModule& module,
-      const facebook::jsi::Value* args,
-      size_t count);
-  /** Async variant of searchScoredHost: runs the search on a background thread
-   *  and resolves a JS Promise (keeps the JS thread / UI responsive). */
-  static facebook::jsi::Value searchScoredAsyncHost(
       facebook::jsi::Runtime& rt,
       facebook::react::TurboModule& module,
       const facebook::jsi::Value* args,

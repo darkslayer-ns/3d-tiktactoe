@@ -31,8 +31,8 @@ import { emptyState, type EvalEngine, type GameConfig, type GameState } from '..
 import { IS_INTERNAL_BUILD } from '../../dev/internalBuild'
 import { ModelKnowledgePanel } from '../../dev/ModelKnowledgePanel'
 
-/** Show "AI thinking…" only if the engine hasn't replied within this long. */
-const THINK_PAINT_MS = 100
+/** Minimum cube-flash duration so a fast AI move still visibly "thinks". */
+const MIN_FLASH_MS = 180
 
 const ENGINE_UNAVAILABLE_MSG =
   'Model engine not available — build with expo run:android/ios'
@@ -154,12 +154,11 @@ const runAITurn = useCallback(async () => {
     if (overRef.current || thinkingRef.current) return
     const aiSide: Cell = humanSideRef.current === P1 ? P2 : P1
     thinkingRef.current = true
+    // Flash starts immediately (the cube breathes) — the human's mark already
+    // rendered, and the inference runs in the background below.
+    setSnap((prev) => (prev.thinking ? prev : { ...prev, thinking: true }))
     if (timerRef.current) clearTimeout(timerRef.current)
-    // No artificial wait: show "thinking" only if the engine hasn't replied
-    // within THINK_PAINT_MS — fast moves land with no indicator at all.
-    timerRef.current = setTimeout(() => {
-      setSnap((prev) => (prev.thinking ? prev : { ...prev, thinking: true }))
-    }, THINK_PAINT_MS)
+    const startedAt = Date.now()
     const board = boardRef.current
     const mover = moverRef.current
     const predictor = predictorRef.current
@@ -167,8 +166,12 @@ const runAITurn = useCallback(async () => {
     if (overRef.current) return
     try {
       const move = await mover.chooseMove(aiSide)
-      if (timerRef.current) clearTimeout(timerRef.current)
-      timerRef.current = null
+      // Keep the flash visible for at least MIN_FLASH_MS so the player always
+      // sees the move land AFTER the cube breathes (render → flash → resolve).
+      const elapsed = Date.now() - startedAt
+      if (elapsed < MIN_FLASH_MS) {
+        await new Promise<void>((resolve) => setTimeout(resolve, MIN_FLASH_MS - elapsed))
+      }
       thinkingRef.current = false
       if (overRef.current) return
       board.apply(move, aiSide)
@@ -355,19 +358,6 @@ const runAITurn = useCallback(async () => {
     [pending, snap.currentPlayer],
   )
 
-  const interactive = useCallback(
-    (index: number) => {
-      const board = boardRef.current
-      if (!board) return false
-      if (demoRef.current || thinkingRef.current || overRef.current) return false
-      if (snap.currentPlayer !== humanSideRef.current) return false
-      if (board.cells[index] !== EMPTY) return false
-      if (pending != null && !axisCross(pending, board.n).has(index)) return false
-      return true
-    },
-    [pending, snap.currentPlayer],
-  )
-
   const placeMove = useCallback(() => {
     const board = boardRef.current
     const predictor = predictorRef.current
@@ -519,7 +509,6 @@ const showHowTo = useCallback(
           lastAiMove={snap.lastAiMove}
           hintIndex={snap.hintIndex}
           thinking={snap.thinking}
-          interactive={interactive}
           startKey={roundKey}
         />
 

@@ -36,7 +36,7 @@
  *    which it maps to GLView `msaaSamples`.
  */
 
-import { useMemo, useRef, useCallback, useEffect, type RefObject } from 'react'
+import { memo, useMemo, useRef, useCallback, useEffect, type RefObject } from 'react'
 import { View, StyleSheet, type GestureResponderEvent } from 'react-native'
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber/native'
 import * as THREE from 'three'
@@ -108,8 +108,6 @@ export interface Board3DProps {
   hintIndex: number | null
   /** true while the opponent is computing — drives the cube's pulse animation */
   thinking: boolean
-  /** true when the cell may be selected by the player right now */
-  interactive: (index: number) => boolean
   /** increments on every game start — triggers the cube "teleports in" pop */
   startKey: number
 }
@@ -128,6 +126,15 @@ export function axisCross(center: number | null, size: number): Set<number> {
     set.add(x + size * (i + size * z)) // column along Y
   }
   return set
+}
+
+/** Live highlight state for a cell, computed in the frame loop (no re-render). */
+function slotFocusState(index: number, size: number, pending: number) {
+  if (pending < 0 || pending >= size ** 3) return { onAxis: false, focusing: false }
+  const [px, py, pz] = cellCoord(pending, size)
+  const [x, y, z] = cellCoord(index, size)
+  const onAxis = (x === px && z === pz) || (y === py && z === pz)
+  return { onAxis, focusing: true }
 }
 
 /** cell index -> world position (same mapping as the web build). */
@@ -150,18 +157,17 @@ interface MarkProps {
   value: Cell
   index: number
   position: [number, number, number]
-  highlighted?: boolean
-  dim?: boolean
-  interactive: boolean
+  size: number
+  focusRef: RefObject<{ pending: number; hint: number; thinking: boolean }>
   onPointerDown: (e: ThreeEvent<PointerEvent>) => void
   onClick: (e: ThreeEvent<MouseEvent>, index: number) => void
 }
 
-function Mark({ value, index, position, highlighted, dim, interactive, onPointerDown, onClick }: MarkProps) {
+const Mark = memo(function Mark({ value, index, position, size, focusRef, onPointerDown, onClick }: MarkProps) {
   const scale = 0.55
-  const intensity = dim ? 0.2 : highlighted ? 2.2 : 0.9
-  // Non-interactive marks stay visible but are never hit by the raycaster.
-  const meshProps = interactive ? {} : { raycast: () => null }
+  // Non-interactive marks stay visible but are never hit by the raycaster —
+  // legality is enforced in clickCell, so marks are always hittable here.
+  const meshProps = {}
 
   // "Teleport" pop-in on mount: scale 0 → 1 with a springy overshoot plus an
   // emissive flash that settles to `intensity`.
@@ -171,20 +177,22 @@ function Mark({ value, index, position, highlighted, dim, interactive, onPointer
 
   useFrame(() => {
     const grp = g.current
+    if (!grp) return
+    // Live dim from the frame loop (no React re-render needed on pending change).
+    const { focusing, onAxis } = slotFocusState(index, size, focusRef.current.pending)
+    const intensity = focusing && !onAxis ? 0.2 : 0.9
     const st = start.current
-    if (!grp || st === 0) return
-    const t = Math.min(1, (Date.now() - st) / 420)
-    if (t >= 1) {
+    const t = st === 0 ? 1 : Math.min(1, (Date.now() - st) / 420)
+    if (st !== 0 && t >= 1) start.current = 0
+    if (t < 1) {
+      const c1 = 1.70158
+      const c3 = c1 + 1
+      const s = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
+      grp.scale.setScalar(Math.max(0.001, s))
+    } else {
       grp.scale.setScalar(1)
-      start.current = 0
-      for (const m of mats.current) m.emissiveIntensity = intensity
-      return
     }
-    const c1 = 1.70158
-    const c3 = c1 + 1
-    const s = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
-    grp.scale.setScalar(Math.max(0.001, s))
-    const flash = 1 + 2.5 * (1 - t)
+    const flash = st !== 0 ? 1 + 2.5 * (1 - t) : 1
     for (const m of mats.current) m.emissiveIntensity = intensity * flash
   })
 
@@ -208,7 +216,6 @@ function Mark({ value, index, position, highlighted, dim, interactive, onPointer
             ref={refMat}
             color="#22d3ee"
             emissive="#22d3ee"
-            emissiveIntensity={intensity}
             roughness={0.25}
           />
         </mesh>
@@ -218,7 +225,6 @@ function Mark({ value, index, position, highlighted, dim, interactive, onPointer
             ref={refMat}
             color="#22d3ee"
             emissive="#22d3ee"
-            emissiveIntensity={intensity}
             roughness={0.25}
           />
         </mesh>
@@ -238,26 +244,23 @@ function Mark({ value, index, position, highlighted, dim, interactive, onPointer
           ref={refMat}
           color="#f472b6"
           emissive="#f472b6"
-          emissiveIntensity={intensity}
           roughness={0.25}
         />
       </mesh>
     </group>
   )
-}
+})
 
 interface SlotProps {
   index: number
   position: [number, number, number]
-  interactive: boolean
-  dim: boolean
-  pulse: boolean
-  thinking: boolean
+  size: number
+  focusRef: RefObject<{ pending: number; hint: number; thinking: boolean }>
   onPointerDown: (e: ThreeEvent<PointerEvent>) => void
   onClick: (e: ThreeEvent<MouseEvent>, index: number) => void
 }
 
-function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPointerDown, onClick }: SlotProps) {
+const AnimatedSlot = memo(function AnimatedSlot({ index, position, size, focusRef, onPointerDown, onClick }: SlotProps) {
   const edgeMat = useMemo(
     () => new THREE.MeshBasicMaterial({ color: '#0284c7', transparent: true, opacity: 0.3 }),
     [],
@@ -267,11 +270,16 @@ function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPo
   useFrame((state) => {
     const e = edgeMat
     const t = state.clock.elapsedTime
+    const { pending, hint, thinking } = focusRef.current
+    // Live highlight from the frame loop (no React re-render on pending change).
+    const { focusing, onAxis } = slotFocusState(index, size, pending)
+    const hintPulse = index === hint
+    const dim = focusing && !onAxis
     // Depth fade: cells farther from the camera go fainter (atmospheric).
     const camDist = state.camera.position.length() || 1
     const depth = state.camera.position.distanceTo(posV) / camDist
     const fade = clamp(1.9 - depth, 0.15, 1)
-    if (pulse) {
+    if (onAxis || hintPulse) {
       e.color.set('#0284c7')
       e.opacity = (0.4 + 0.15 * Math.sin(t * 6)) * fade
     } else if (thinking) {
@@ -286,12 +294,9 @@ function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPo
 
   return (
     <group position={position}>
-      {/* invisible hit target (transparent faces would show triangle seams) */}
-      <mesh
-        {...(interactive ? {} : { raycast: () => null })}
-        onPointerDown={onPointerDown}
-        onClick={(e) => onClick(e, index)}
-      >
+      {/* invisible hit target (transparent faces would show triangle seams).
+          Always hittable — legality is enforced in clickCell. */}
+      <mesh onPointerDown={onPointerDown} onClick={(e) => onClick(e, index)}>
         <boxGeometry args={[SLOT_SIZE, SLOT_SIZE, SLOT_SIZE]} />
         <meshStandardMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
@@ -303,7 +308,7 @@ function AnimatedSlot({ index, position, interactive, dim, pulse, thinking, onPo
       ))}
     </group>
   )
-}
+})
 
 function WinBeam({ line, size }: { line: Coord[]; size: number }) {
   const off = (size - 1) / 2
@@ -470,9 +475,7 @@ interface BoardMeshProps {
   pendingIndex: number | null
   winningLine: Coord[] | null
   lastAiMove: number | null
-  hintIndex: number | null
-  thinking: boolean
-  interactive: (index: number) => boolean
+  focusRef: RefObject<{ pending: number; hint: number; thinking: boolean }>
   onPointerDown: (e: ThreeEvent<PointerEvent>) => void
   handleClick: (e: ThreeEvent<MouseEvent>, index: number) => void
 }
@@ -483,9 +486,7 @@ function BoardMesh({
   pendingIndex,
   winningLine,
   lastAiMove,
-  hintIndex,
-  thinking,
-  interactive,
+  focusRef,
   onPointerDown,
   handleClick,
 }: BoardMeshProps) {
@@ -495,15 +496,10 @@ function BoardMesh({
     return arr
   }, [size])
 
-  const focusing = pendingIndex != null && pendingIndex >= 0 && pendingIndex < size ** 3
-  const axisSet = useMemo(() => axisCross(focusing ? pendingIndex : null, size), [focusing, pendingIndex, size])
-
   return (
     <group>
       {slots.map(({ index, pos }) => {
         const value = cells[index]
-        const onAxis = axisSet.has(index)
-        const dim = focusing && !onAxis
         if (value !== 0) {
           return (
             <Mark
@@ -511,8 +507,8 @@ function BoardMesh({
               value={value}
               index={index}
               position={pos}
-              dim={dim}
-              interactive={interactive(index)}
+              size={size}
+              focusRef={focusRef}
               onPointerDown={onPointerDown}
               onClick={handleClick}
             />
@@ -523,10 +519,8 @@ function BoardMesh({
             key={index}
             index={index}
             position={pos}
-            interactive={interactive(index)}
-            dim={dim}
-            pulse={onAxis || index === hintIndex}
-            thinking={thinking}
+            size={size}
+            focusRef={focusRef}
             onPointerDown={onPointerDown}
             onClick={handleClick}
           />
@@ -560,15 +554,28 @@ export function Board3D({
   lastAiMove,
   hintIndex,
   thinking,
-  interactive,
   startKey,
 }: Board3DProps) {
   // Spherical orbit target, written by the gestures, read by OrbitRig.
   const target = useRef<OrbitTarget>(defaultOrbitTarget(size))
   const userZoomed = useRef(false)
   const pinchStartDist = useRef(0)
+  // Live highlight state read by the slots' frame loops. Updated here in an RN
+  // effect (fires instantly) so clicks don't re-render the R3F scene.
+  const focusRef = useRef<{ pending: number; hint: number; thinking: boolean }>({
+    pending: -1,
+    hint: -1,
+    thinking: false,
+  })
+  useEffect(() => {
+    focusRef.current = { pending: pendingIndex ?? -1, hint: hintIndex ?? -1, thinking }
+  }, [pendingIndex, hintIndex, thinking])
   // Pointer-down position for the manual 10px click threshold (web parity).
   const downRef = useRef<{ x: number; y: number } | null>(null)
+  // Keep the latest onCellClick without changing handleClick's identity (so the
+  // memoized slots don't re-render on every GameScreen state change).
+  const onCellClickRef = useRef(onCellClick)
+  onCellClickRef.current = onCellClick
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation()
@@ -582,9 +589,9 @@ export function Board3D({
       const x = e.nativeEvent.offsetX
       const y = e.nativeEvent.offsetY
       if (d && Math.hypot(x - d.x, y - d.y) > 10) return
-      onCellClick(index)
+      onCellClickRef.current(index)
     },
-    [onCellClick],
+    [],
   )
 
 const pan = useRef({ theta: 0, phi: 0 })
@@ -695,9 +702,7 @@ const pan = useRef({ theta: 0, phi: 0 })
               pendingIndex={pendingIndex}
               winningLine={winningLine}
               lastAiMove={lastAiMove}
-              hintIndex={hintIndex}
-              thinking={thinking}
-              interactive={interactive}
+              focusRef={focusRef}
               onPointerDown={handlePointerDown}
               handleClick={handleClick}
             />

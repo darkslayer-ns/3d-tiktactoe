@@ -11,6 +11,9 @@
 #include <thread>
 #include <vector>
 
+#include <pthread.h>
+#include <sys/resource.h>
+
 #include "tfm/model.hpp"
 #include "tfm/search.hpp"
 #include "tfm_memory_loader.hpp"
@@ -278,6 +281,13 @@ jsi::Value hostSearchScored(jsi::Runtime& rt, std::shared_ptr<EngineState> state
         jsi::Runtime* rtPtr = &runtime;
         std::thread([state, jsInvoker, model, resolve, reject, rtPtr, cells, n,
                      ai, depth, topK, maxNodes, aggression]() {
+          // Background search must NOT starve the UI/main thread: run at a
+          // lower scheduling priority so clicks/render stay smooth.
+#if defined(__APPLE__)
+          pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#else
+          setpriority(PRIO_PROCESS, 0, 10);
+#endif
           try {
             std::vector<tfm::ScoredMove> scored;
             {

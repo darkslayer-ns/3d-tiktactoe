@@ -57,16 +57,6 @@ void Model::forwardBatch(int n, int count, const int* boards,
                          float* policies) const {
   if (count <= 0) return;
   const int N = n * n * n;
-#if defined(_OPENMP)
-  // Parallel over the batch. `attention`'s inner head loop is nested inside
-  // this region, and OpenMP nested parallelism is off by default, so each
-  // worker runs a serial forward — no oversubscription.
-#pragma omp parallel for schedule(dynamic)
-  for (int i = 0; i < count; ++i) {
-    forward(boards + (size_t)i * N, masks + (size_t)i * N, n, values[i],
-            policies + (size_t)i * N);
-  }
-#else
   const unsigned hw = std::thread::hardware_concurrency();
   const int nThreads = std::min(count, hw > 0 ? (int)hw : 2);
   const int chunk = (count + nThreads - 1) / nThreads;
@@ -89,7 +79,6 @@ void Model::forwardBatch(int n, int count, const int* boards,
     b0 = b1;
   }
   for (auto& th : pool) th.join();
-#endif
 }
 
 int Model::numel() const {

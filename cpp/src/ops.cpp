@@ -197,13 +197,10 @@ void attention(const Mat& x, int nhead, float scale,
   linearSlice(x, inProjW, inProjB, d, d, k);
   linearSlice(x, inProjW, inProjB, 2 * d, d, v);
 
-  // Heads are independent; each gets its own `scores` so the loop is safe to
-  // run in parallel (OpenMP on Android). Each head writes a disjoint slice of
-  // `o`, so no locks needed.
+  // Heads are independent; each gets its own `scores`. Serial (OpenMP was
+  // reverted — the thread spawn cost dwarfed these small GEMMs). Each head
+  // writes a disjoint slice of `o`, so no sharing.
   Mat o(N, d, 0.0f);
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
   for (int h = 0; h < nhead; ++h) {
     const int base = h * hd;
     Mat scores(N, N);

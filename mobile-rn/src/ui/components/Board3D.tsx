@@ -137,6 +137,22 @@ function slotFocusState(index: number, size: number, pending: number) {
   return { onAxis, focusing: true }
 }
 
+/**
+ * Mutable board state read every frame by the slots' useFrame loops. Board3D
+ * mutates it on every render (RN side, instant) WITHOUT re-rendering the R3F
+ * Canvas (memoized), so all visuals update on the next GL frame — no React
+ * reconciler commits, which are what lagged big boards.
+ */
+interface GameStateRef {
+  cells: Cell[]
+  size: number
+  pending: number
+  hint: number
+  thinking: boolean
+  lastAiMove: number
+  winningLine: Coord[] | null
+}
+
 /** cell index -> world position (same mapping as the web build). */
 function cellPosition(index: number, size: number, expl: number): [number, number, number] {
   const [x, y, z] = cellCoord(index, size)
@@ -153,142 +169,92 @@ function defaultOrbitTarget(size: number): OrbitTarget {
   return { theta: s.theta, phi: s.phi, distance: fitDistance(size) }
 }
 
-interface MarkProps {
-  value: Cell
-  index: number
-  position: [number, number, number]
-  size: number
-  focusRef: RefObject<{ pending: number; hint: number; thinking: boolean }>
-  onPointerDown: (e: ThreeEvent<PointerEvent>) => void
-  onClick: (e: ThreeEvent<MouseEvent>, index: number) => void
-}
-
-const Mark = memo(function Mark({ value, index, position, size, focusRef, onPointerDown, onClick }: MarkProps) {
-  const scale = 0.55
-  // Non-interactive marks stay visible but are never hit by the raycaster —
-  // legality is enforced in clickCell, so marks are always hittable here.
-  const meshProps = {}
-
-  // "Teleport" pop-in on mount: scale 0 → 1 with a springy overshoot plus an
-  // emissive flash that settles to `intensity`.
-  const g = useRef<THREE.Group>(null)
-  const start = useRef(Date.now())
-  const mats = useRef<THREE.MeshStandardMaterial[]>([])
-
-  useFrame(() => {
-    const grp = g.current
-    if (!grp) return
-    // Live dim from the frame loop (no React re-render needed on pending change).
-    const { focusing, onAxis } = slotFocusState(index, size, focusRef.current.pending)
-    const intensity = focusing && !onAxis ? 0.2 : 0.9
-    const st = start.current
-    const t = st === 0 ? 1 : Math.min(1, (Date.now() - st) / 420)
-    if (st !== 0 && t >= 1) start.current = 0
-    if (t < 1) {
-      const c1 = 1.70158
-      const c3 = c1 + 1
-      const s = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
-      grp.scale.setScalar(Math.max(0.001, s))
-    } else {
-      grp.scale.setScalar(1)
-    }
-    const flash = st !== 0 ? 1 + 2.5 * (1 - t) : 1
-    for (const m of mats.current) m.emissiveIntensity = intensity * flash
-  })
-
-  const refMat = (m: THREE.MeshStandardMaterial | null) => {
-    if (m && !mats.current.includes(m)) mats.current.push(m)
-  }
-
-  if (value === 1) {
-    // an X lying in the face plane: two thin bars crossing at 45°/135°
-    const xLen = 1.15 * scale
-    return (
-      <group
-        ref={g}
-        position={position}
-        onPointerDown={onPointerDown}
-        onClick={(e: ThreeEvent<MouseEvent>) => onClick(e, index)}
-      >
-        <mesh {...meshProps} rotation={[0, 0, Math.PI / 4]}>
-          <boxGeometry args={[xLen, 0.22, 0.22]} />
-          <meshStandardMaterial
-            ref={refMat}
-            color="#22d3ee"
-            emissive="#22d3ee"
-            roughness={0.25}
-          />
-        </mesh>
-        <mesh {...meshProps} rotation={[0, 0, -Math.PI / 4]}>
-          <boxGeometry args={[xLen, 0.22, 0.22]} />
-          <meshStandardMaterial
-            ref={refMat}
-            color="#22d3ee"
-            emissive="#22d3ee"
-            roughness={0.25}
-          />
-        </mesh>
-      </group>
-    )
-  }
-  return (
-    <group
-      ref={g}
-      position={position}
-      onPointerDown={onPointerDown}
-      onClick={(e: ThreeEvent<MouseEvent>) => onClick(e, index)}
-    >
-      <mesh {...meshProps}>
-        <torusGeometry args={[0.42 * scale, 0.12, 16, 48]} />
-        <meshStandardMaterial
-          ref={refMat}
-          color="#f472b6"
-          emissive="#f472b6"
-          roughness={0.25}
-        />
-      </mesh>
-    </group>
-  )
-})
-
 interface SlotProps {
   index: number
   position: [number, number, number]
   size: number
-  focusRef: RefObject<{ pending: number; hint: number; thinking: boolean }>
+  gameRef: RefObject<GameStateRef>
   onPointerDown: (e: ThreeEvent<PointerEvent>) => void
   onClick: (e: ThreeEvent<MouseEvent>, index: number) => void
 }
 
-const AnimatedSlot = memo(function AnimatedSlot({ index, position, size, focusRef, onPointerDown, onClick }: SlotProps) {
+/**
+ * One cell of the cube: a hit target, a glowing empty-slot border, and
+ * pre-created X / O mark meshes. EVERYTHING (visibility, pop-in, dim, pulse,
+ * thinking) is driven from the frame loop reading `gameRef`, so placing a mark
+ * or the AI replying never goes through the React/R3F reconciler.
+ */
+const AnimatedSlot = memo(function AnimatedSlot({ index, position, size, gameRef, onPointerDown, onClick }: SlotProps) {
   const edgeMat = useMemo(
     () => new THREE.MeshBasicMaterial({ color: '#0284c7', transparent: true, opacity: 0.3 }),
     [],
   )
   const posV = useMemo(() => new THREE.Vector3(position[0], position[1], position[2]), [position])
+  const edgesG = useRef<THREE.Group>(null)
+  const xG = useRef<THREE.Group>(null)
+  const oG = useRef<THREE.Group>(null)
+  const xMats = useRef<THREE.MeshStandardMaterial[]>([])
+  const oMat = useRef<THREE.MeshStandardMaterial | null>(null)
+  const born = useRef(-1)
+  const lastVal = useRef(0)
+
+  const scale = 0.55
+  const xLen = 1.15 * scale
+
+  const xMat = (m: THREE.MeshStandardMaterial | null) => {
+    if (m && !xMats.current.includes(m)) xMats.current.push(m)
+  }
 
   useFrame((state) => {
-    const e = edgeMat
-    const t = state.clock.elapsedTime
-    const { pending, hint, thinking } = focusRef.current
-    // Live highlight from the frame loop (no React re-render on pending change).
-    const { focusing, onAxis } = slotFocusState(index, size, pending)
-    const hintPulse = index === hint
+    const g = gameRef.current
+    const v = g.cells[index] ?? 0
+    const filled = v !== 0
+    if (edgesG.current) edgesG.current.visible = !filled
+    if (xG.current) xG.current.visible = v === 1
+    if (oG.current) oG.current.visible = v === 2
+
+    const { focusing, onAxis } = slotFocusState(index, size, g.pending)
+    const hintPulse = index === g.hint
     const dim = focusing && !onAxis
-    // Depth fade: cells farther from the camera go fainter (atmospheric).
+    const intensity = focusing && !onAxis ? 0.2 : 0.9
+
+    // Mark pop-in when the cell flips to filled.
+    const grp = v === 1 ? xG.current : oG.current
+    if (filled && lastVal.current !== v) {
+      born.current = state.clock.elapsedTime
+      if (grp) grp.scale.setScalar(0.001)
+    }
+    lastVal.current = v
+    if (filled && grp) {
+      const bt = born.current
+      const t = bt >= 0 ? Math.min(1, (state.clock.elapsedTime - bt) / 0.42) : 1
+      if (bt >= 0 && t < 1) {
+        const c1 = 1.70158
+        const c3 = c1 + 1
+        const s = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
+        grp.scale.setScalar(Math.max(0.001, s))
+      } else {
+        grp.scale.setScalar(1)
+      }
+      const flash = bt >= 0 && t < 1 ? 1 + 2.5 * (1 - t) : 1
+      for (const m of xMats.current) m.emissiveIntensity = intensity * flash
+      if (oMat.current) oMat.current.emissiveIntensity = intensity * flash
+    }
+
+    // Empty-slot border: depth fade + axis/hint pulse + thinking breathe.
+    const now = state.clock.elapsedTime
     const camDist = state.camera.position.length() || 1
     const depth = state.camera.position.distanceTo(posV) / camDist
     const fade = clamp(1.9 - depth, 0.15, 1)
     if (onAxis || hintPulse) {
-      e.color.set('#0284c7')
-      e.opacity = (0.4 + 0.15 * Math.sin(t * 6)) * fade
-    } else if (thinking) {
-      // Opponent computing: the borders breathe (no text UI).
-      e.color.set('#0284c7')
-      e.opacity = (0.2 + 0.15 * (0.5 + 0.5 * Math.sin(t * 4))) * fade
+      edgeMat.color.set('#0284c7')
+      edgeMat.opacity = (0.4 + 0.15 * Math.sin(now * 6)) * fade
+    } else if (g.thinking) {
+      edgeMat.color.set('#0284c7')
+      edgeMat.opacity = (0.2 + 0.15 * (0.5 + 0.5 * Math.sin(now * 4))) * fade
     } else {
-      e.color.set(dim ? '#0c4a6e' : '#0284c7')
-      e.opacity = (dim ? 0.18 : 0.3) * fade
+      edgeMat.color.set(dim ? '#0c4a6e' : '#0284c7')
+      edgeMat.opacity = (dim ? 0.18 : 0.3) * fade
     }
   })
 
@@ -301,50 +267,82 @@ const AnimatedSlot = memo(function AnimatedSlot({ index, position, size, focusRe
         <meshStandardMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
       {/* glowing cyan border: one thin box per edge, sharing one animated material */}
-      {slotEdges.map((b, i) => (
-        <mesh key={i} position={b.pos} raycast={() => null} material={edgeMat}>
-          <boxGeometry args={b.size} />
+      <group ref={edgesG}>
+        {slotEdges.map((b, i) => (
+          <mesh key={i} position={b.pos} raycast={() => null} material={edgeMat}>
+            <boxGeometry args={b.size} />
+          </mesh>
+        ))}
+      </group>
+      {/* X mark: two crossed cyan emissive bars */}
+      <group ref={xG}>
+        <mesh raycast={() => null} rotation={[0, 0, Math.PI / 4]}>
+          <boxGeometry args={[xLen, 0.22, 0.22]} />
+          <meshStandardMaterial ref={xMat} color="#22d3ee" emissive="#22d3ee" emissiveIntensity={0.9} roughness={0.25} />
         </mesh>
-      ))}
+        <mesh raycast={() => null} rotation={[0, 0, -Math.PI / 4]}>
+          <boxGeometry args={[xLen, 0.22, 0.22]} />
+          <meshStandardMaterial ref={xMat} color="#22d3ee" emissive="#22d3ee" emissiveIntensity={0.9} roughness={0.25} />
+        </mesh>
+      </group>
+      {/* O mark: pink emissive torus ring */}
+      <group ref={oG}>
+        <mesh raycast={() => null}>
+          <torusGeometry args={[0.42 * scale, 0.12, 16, 48]} />
+          <meshStandardMaterial ref={(m) => (oMat.current = m)} color="#f472b6" emissive="#f472b6" emissiveIntensity={0.9} roughness={0.25} />
+        </mesh>
+      </group>
     </group>
   )
 })
 
-function WinBeam({ line, size }: { line: Coord[]; size: number }) {
-  const off = (size - 1) / 2
-  const k = 1 + EXPLODE
-  const { mid, len, quat } = useMemo(() => {
-    const a = line[0]
-    const b = line[line.length - 1]
-    const p1 = new THREE.Vector3((a[0] - off) * k, (off - a[1]) * k, (a[2] - off) * k)
-    const p2 = new THREE.Vector3((b[0] - off) * k, (off - b[1]) * k, (b[2] - off) * k)
-    const mid = p1.clone().add(p2).multiplyScalar(0.5)
-    const len = p1.distanceTo(p2)
-    const dir = p2.clone().sub(p1).normalize()
-    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
-    // Pass quaternion as a plain [x, y, z, w] tuple: R3F mutates the object's
-    // quaternion via fromArray(), whereas passing a THREE.Quaternion instance
-    // makes R3F try to assign the read-only property and crash.
-    return { mid: mid.toArray() as [number, number, number], len, quat: [q.x, q.y, q.z, q.w] as [number, number, number, number] }
-  }, [line, off, k])
-
-  // "Flash" the winning line for the first ~1.6s (until the result overlay
-  // appears) — a quick pulsing bloom.
+function WinBeam({ gameRef }: { gameRef: RefObject<GameStateRef> }) {
+  const g = useRef<THREE.Group>(null)
   const mat = useRef<THREE.MeshStandardMaterial>(null)
+  const lastLine = useRef('')
   const start = useRef(Date.now())
+
   useFrame(() => {
+    const grp = g.current
     const m = mat.current
-    if (!m) return
-    const t = (Date.now() - start.current) / 1000
-    const pulse = 0.5 + 0.5 * Math.abs(Math.sin(t * 7))
-    m.emissiveIntensity = 1.5 + 2.5 * pulse
-    m.opacity = 0.6 + 0.4 * pulse
+    const line = gameRef.current.winningLine
+    if (grp) {
+      if (line && line.length >= 2) {
+        const sig = line.join('|')
+        if (sig !== lastLine.current) {
+          lastLine.current = sig
+          const off = (gameRef.current.size - 1) / 2
+          const k = 1 + EXPLODE
+          const a = line[0]
+          const b = line[line.length - 1]
+          const p1 = new THREE.Vector3((a[0] - off) * k, (off - a[1]) * k, (a[2] - off) * k)
+          const p2 = new THREE.Vector3((b[0] - off) * k, (off - b[1]) * k, (b[2] - off) * k)
+          const mid = p1.clone().add(p2).multiplyScalar(0.5)
+          const len = p1.distanceTo(p2)
+          const dir = p2.clone().sub(p1).normalize()
+          const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+          grp.position.copy(mid)
+          grp.quaternion.copy(q)
+          grp.scale.set(1, len + 0.4, 1)
+          start.current = Date.now()
+        }
+        grp.visible = true
+      } else {
+        grp.visible = false
+      }
+    }
+    if (m && grp && grp.visible) {
+      const t = (Date.now() - start.current) / 1000
+      const pulse = 0.5 + 0.5 * Math.abs(Math.sin(t * 7))
+      m.emissiveIntensity = 1.5 + 2.5 * pulse
+      m.opacity = 0.6 + 0.4 * pulse
+    }
   })
 
   return (
-    <group position={mid}>
-      <mesh raycast={() => null} quaternion={quat}>
-        <cylinderGeometry args={[0.07, 0.07, len + 0.4, 8]} />
+    <group ref={g} visible={false}>
+      <mesh raycast={() => null}>
+        <cylinderGeometry args={[0.07, 0.07, 1, 8]} />
         <meshStandardMaterial
           ref={mat}
           color="#ffffff"
@@ -358,26 +356,49 @@ function WinBeam({ line, size }: { line: Coord[]; size: number }) {
   )
 }
 
-function PendingHighlight({ position }: { position: [number, number, number] }) {
+function PendingHighlight({ gameRef }: { gameRef: RefObject<GameStateRef> }) {
+  const m = useRef<THREE.Mesh>(null)
   const s = 0.9 * (1 + EXPLODE)
+  useFrame(() => {
+    const mesh = m.current
+    if (!mesh) return
+    const g = gameRef.current
+    const p = g.pending
+    const show = p >= 0 && p < g.cells.length && g.cells[p] === 0
+    mesh.visible = show
+    if (show) {
+      const [x, y, z] = cellPosition(p, g.size, EXPLODE)
+      mesh.position.set(x, y, z)
+    }
+  })
   return (
-    <mesh raycast={() => null} position={position}>
+    <mesh ref={m} raycast={() => null} visible={false}>
       <boxGeometry args={[s, s, s]} />
       <meshBasicMaterial color="#fef08a" transparent opacity={0.35} depthWrite={false} />
     </mesh>
   )
 }
 
-function LastAiMoveHighlight({ position }: { position: [number, number, number] }) {
+function LastAiMoveHighlight({ gameRef }: { gameRef: RefObject<GameStateRef> }) {
+  const m = useRef<THREE.Mesh>(null)
   const mat = useRef<THREE.MeshBasicMaterial>(null)
   const s = 0.62 * (1 + EXPLODE)
   useFrame((state) => {
-    const m = mat.current
-    if (!m) return
-    m.opacity = 0.2 + 0.15 * Math.sin(state.clock.elapsedTime * 6)
+    const mesh = m.current
+    const matl = mat.current
+    if (!mesh || !matl) return
+    const g = gameRef.current
+    const idx = g.lastAiMove
+    const show = idx >= 0 && idx < g.cells.length && g.cells[idx] !== 0
+    mesh.visible = show
+    if (show) {
+      const [x, y, z] = cellPosition(idx, g.size, EXPLODE)
+      mesh.position.set(x, y, z)
+      matl.opacity = 0.2 + 0.15 * Math.sin(state.clock.elapsedTime * 6)
+    }
   })
   return (
-    <mesh raycast={() => null} position={position}>
+    <mesh ref={m} raycast={() => null} visible={false}>
       <boxGeometry args={[s, s, s]} />
       <meshBasicMaterial
         ref={mat}
@@ -471,25 +492,12 @@ function OrbitRig({ target }: { target: RefObject<OrbitTarget> }) {
 
 interface BoardMeshProps {
   size: number
-  cells: Cell[]
-  pendingIndex: number | null
-  winningLine: Coord[] | null
-  lastAiMove: number | null
-  focusRef: RefObject<{ pending: number; hint: number; thinking: boolean }>
+  gameRef: RefObject<GameStateRef>
   onPointerDown: (e: ThreeEvent<PointerEvent>) => void
   handleClick: (e: ThreeEvent<MouseEvent>, index: number) => void
 }
 
-function BoardMesh({
-  size,
-  cells,
-  pendingIndex,
-  winningLine,
-  lastAiMove,
-  focusRef,
-  onPointerDown,
-  handleClick,
-}: BoardMeshProps) {
+function BoardMesh({ size, gameRef, onPointerDown, handleClick }: BoardMeshProps) {
   const slots = useMemo(() => {
     const arr: { index: number; pos: [number, number, number] }[] = []
     for (let i = 0; i < size ** 3; i++) arr.push({ index: i, pos: cellPosition(i, size, EXPLODE) })
@@ -498,49 +506,23 @@ function BoardMesh({
 
   return (
     <group>
-      {slots.map(({ index, pos }) => {
-        const value = cells[index]
-        if (value !== 0) {
-          return (
-            <Mark
-              key={index}
-              value={value}
-              index={index}
-              position={pos}
-              size={size}
-              focusRef={focusRef}
-              onPointerDown={onPointerDown}
-              onClick={handleClick}
-            />
-          )
-        }
-        return (
-          <AnimatedSlot
-            key={index}
-            index={index}
-            position={pos}
-            size={size}
-            focusRef={focusRef}
-            onPointerDown={onPointerDown}
-            onClick={handleClick}
-          />
-        )
-      })}
+      {/* Every cell is a pre-created slot (edge bars + X + O meshes); the frame
+          loop toggles what's visible, so no reconciler commits on moves. */}
+      {slots.map(({ index, pos }) => (
+        <AnimatedSlot
+          key={index}
+          index={index}
+          position={pos}
+          size={size}
+          gameRef={gameRef}
+          onPointerDown={onPointerDown}
+          onClick={handleClick}
+        />
+      ))}
 
-      {pendingIndex != null &&
-        pendingIndex >= 0 &&
-        pendingIndex < size ** 3 &&
-        cells[pendingIndex] === 0 && (
-          <PendingHighlight position={cellPosition(pendingIndex, size, EXPLODE)} />
-        )}
-
-      {lastAiMove != null &&
-        lastAiMove >= 0 &&
-        lastAiMove < size ** 3 && (
-          <LastAiMoveHighlight position={cellPosition(lastAiMove, size, EXPLODE)} />
-        )}
-
-      {winningLine && winningLine.length >= 2 && <WinBeam line={winningLine} size={size} />}
+      <PendingHighlight gameRef={gameRef} />
+      <LastAiMoveHighlight gameRef={gameRef} />
+      <WinBeam gameRef={gameRef} />
     </group>
   )
 }
@@ -560,16 +542,25 @@ export function Board3D({
   const target = useRef<OrbitTarget>(defaultOrbitTarget(size))
   const userZoomed = useRef(false)
   const pinchStartDist = useRef(0)
-  // Live highlight state read by the slots' frame loops. Updated here in an RN
-  // effect (fires instantly) so clicks don't re-render the R3F scene.
-  const focusRef = useRef<{ pending: number; hint: number; thinking: boolean }>({
-    pending: -1,
-    hint: -1,
-    thinking: false,
+  // Mutable board state read by the frame loops. Mutated on every render (RN
+  // side, instant); the R3F Canvas is memoized, so nothing re-renders on game
+  // state changes — visuals update on the next GL frame.
+  const gameRef = useRef<GameStateRef>({
+    cells,
+    size,
+    pending: pendingIndex ?? -1,
+    hint: hintIndex ?? -1,
+    thinking,
+    lastAiMove: lastAiMove ?? -1,
+    winningLine,
   })
-  useEffect(() => {
-    focusRef.current = { pending: pendingIndex ?? -1, hint: hintIndex ?? -1, thinking }
-  }, [pendingIndex, hintIndex, thinking])
+  gameRef.current.cells = cells
+  gameRef.current.size = size
+  gameRef.current.pending = pendingIndex ?? -1
+  gameRef.current.hint = hintIndex ?? -1
+  gameRef.current.thinking = thinking
+  gameRef.current.lastAiMove = lastAiMove ?? -1
+  gameRef.current.winningLine = winningLine
   // Pointer-down position for the manual 10px click threshold (web parity).
   const downRef = useRef<{ x: number; y: number } | null>(null)
   // Keep the latest onCellClick without changing handleClick's identity (so the
@@ -687,32 +678,61 @@ const pan = useRef({ theta: 0, phi: 0 })
       onResponderRelease={handleResponderEnd}
       onResponderTerminate={handleResponderEnd}
     >
-        <Canvas
-          style={styles.canvas}
-          camera={{ position: INITIAL_CAMERA_POSITION, fov: 45 }}
-          gl={{ antialias: true }}
-        >
-          <ambientLight intensity={0.5} />
-          <pointLight position={[6, 6, 6]} intensity={1.2} color="#22d3ee" />
-          <pointLight position={[-6, -4, 4]} intensity={0.8} color="#f472b6" />
-          <CubePop startKey={startKey}>
-            <BoardMesh
-              size={size}
-              cells={cells}
-              pendingIndex={pendingIndex}
-              winningLine={winningLine}
-              lastAiMove={lastAiMove}
-              focusRef={focusRef}
-              onPointerDown={handlePointerDown}
-              handleClick={handleClick}
-            />
-          </CubePop>
-          <FitRig size={size} userZoomed={userZoomed} target={target} />
-          <OrbitRig target={target} />
-        </Canvas>
-</View>
+      <BoardScene
+        gameRef={gameRef}
+        size={size}
+        startKey={startKey}
+        onPointerDown={handlePointerDown}
+        handleClick={handleClick}
+        target={target}
+        userZoomed={userZoomed}
+      />
+    </View>
   )
 }
+
+// Memoized: re-renders ONLY when size/startKey change, so game-state updates
+// (cells/pending/thinking) never re-run the R3F Canvas — the slots read
+// `gameRef` in their frame loops instead.
+const BoardScene = memo(function BoardScene({
+  gameRef,
+  size,
+  startKey,
+  onPointerDown,
+  handleClick,
+  target,
+  userZoomed,
+}: {
+  gameRef: RefObject<GameStateRef>
+  size: number
+  startKey: number
+  onPointerDown: (e: ThreeEvent<PointerEvent>) => void
+  handleClick: (e: ThreeEvent<MouseEvent>, index: number) => void
+  target: RefObject<OrbitTarget>
+  userZoomed: RefObject<boolean>
+}) {
+  return (
+    <Canvas
+      style={styles.canvas}
+      camera={{ position: INITIAL_CAMERA_POSITION, fov: 45 }}
+      gl={{ antialias: true }}
+    >
+      <ambientLight intensity={0.5} />
+      <pointLight position={[6, 6, 6]} intensity={1.2} color="#22d3ee" />
+      <pointLight position={[-6, -4, 4]} intensity={0.8} color="#f472b6" />
+      <CubePop startKey={startKey}>
+        <BoardMesh
+          size={size}
+          gameRef={gameRef}
+          onPointerDown={onPointerDown}
+          handleClick={handleClick}
+        />
+      </CubePop>
+      <FitRig size={size} userZoomed={userZoomed} target={target} />
+      <OrbitRig target={target} />
+    </Canvas>
+  )
+})
 
 const styles = StyleSheet.create({
   canvasHost: {

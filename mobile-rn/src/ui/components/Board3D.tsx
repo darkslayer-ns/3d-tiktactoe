@@ -193,6 +193,8 @@ const AnimatedSlot = memo(function AnimatedSlot({ index, position, size, gameRef
   const edgesG = useRef<THREE.Group>(null)
   const xG = useRef<THREE.Group>(null)
   const oG = useRef<THREE.Group>(null)
+  const hitMesh = useRef<THREE.Mesh>(null)
+  const defaultRaycast = useRef<((raycaster: THREE.Raycaster, intersects: THREE.Intersection[]) => void) | null>(null)
   const xMats = useRef<THREE.MeshStandardMaterial[]>([])
   const oMat = useRef<THREE.MeshStandardMaterial | null>(null)
   const born = useRef(-1)
@@ -217,6 +219,18 @@ const AnimatedSlot = memo(function AnimatedSlot({ index, position, size, gameRef
     const hintPulse = index === g.hint
     const dim = focusing && !onAxis
     const intensity = focusing && !onAxis ? 0.2 : 0.9
+
+    // Hit-test occlusion: only empty cells that are on the selected axis (or
+    // everything when nothing is selected) are raycast-able. Off-axis/outer
+    // cells become no-ops so the tap reaches INNER cells on the axis instead
+    // of hitting the outer cell in front of them.
+    const hit = hitMesh.current
+    if (hit) {
+      if (!defaultRaycast.current) defaultRaycast.current = hit.raycast
+      const hittable = !filled && (!focusing || onAxis)
+      const want = hittable ? defaultRaycast.current : THREE.Object3D.prototype.raycast
+      if (hit.raycast !== want) hit.raycast = want
+    }
 
     // Mark pop-in when the cell flips to filled.
     const grp = v === 1 ? xG.current : oG.current
@@ -262,7 +276,7 @@ const AnimatedSlot = memo(function AnimatedSlot({ index, position, size, gameRef
     <group position={position}>
       {/* invisible hit target (transparent faces would show triangle seams).
           Always hittable — legality is enforced in clickCell. */}
-      <mesh onPointerDown={onPointerDown} onClick={(e) => onClick(e, index)}>
+      <mesh ref={hitMesh} onPointerDown={onPointerDown} onClick={(e) => onClick(e, index)}>
         <boxGeometry args={[SLOT_SIZE, SLOT_SIZE, SLOT_SIZE]} />
         <meshStandardMaterial transparent opacity={0} depthWrite={false} />
       </mesh>

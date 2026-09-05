@@ -14,12 +14,16 @@
     },
     "plugins": [
       "./plugins/withTfmEngine",
-      ["expo-splash-screen", {
-        "backgroundColor": "#020617",
-        "image": "./assets/isocube_logo.png",
-        "imageWidth": 220,
-        "resizeMode": "contain"
-      }]
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#020617",
+          "image": "./assets/isocube_logo.png",
+          "imageWidth": 220,
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-audio"
     ],
     "android": {
       "package": "com.neoncube.ttt",

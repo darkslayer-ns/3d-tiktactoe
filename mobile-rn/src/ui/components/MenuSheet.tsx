@@ -17,6 +17,7 @@ import {
 import { Theme, fontSize, radius, spacing } from '../theme'
 import type { Difficulty, GameConfig } from '../../ai/types'
 import type { Cell } from '../../game/types'
+import { playSfx, hapticSelection } from '../../audio/SoundManager'
 
 export type { GameConfig }
 
@@ -47,7 +48,11 @@ function Segmented<T extends string | number>({
         return (
           <Pressable
             key={String(opt.value)}
-            onPress={() => onChange(opt.value)}
+            onPress={() => {
+              playSfx('click')
+              hapticSelection()
+              onChange(opt.value)
+            }}
             style={[styles.segment, active && styles.segmentActive]}
           >
             <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
@@ -142,6 +147,9 @@ function SizeSlider({
         })
       }}
       onResponderMove={(e) => setFromPageX(e.nativeEvent.pageX)}
+      onResponderRelease={() => {
+        if (lastEmittedRef.current !== value) playSfx('click')
+      }}
     >
       <View style={styles.sliderTrack}>
         <Animated.View

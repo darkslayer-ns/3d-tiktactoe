@@ -6,10 +6,16 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaView, StyleSheet } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
+import { useEffect } from 'react'
 import { Theme } from './ui/theme'
 import { GameScreen } from './ui/screens/GameScreen'
+import { playSfx } from './audio/SoundManager'
 
 export default function App() {
+  useEffect(() => {
+    playSfx('intro')
+  }, [])
+
   return (
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaView style={styles.root}>

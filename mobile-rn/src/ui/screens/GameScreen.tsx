@@ -30,6 +30,7 @@ import { adaptiveLevel, emptyStats, recordResult, type GameStats } from '../../a
 import { emptyState, type EvalEngine, type GameConfig, type GameState } from '../../ai/types'
 import { IS_INTERNAL_BUILD } from '../../dev/internalBuild'
 import { ModelKnowledgePanel } from '../../dev/ModelKnowledgePanel'
+import { playSfx } from '../../audio/SoundManager'
 
 /** Minimum cube-flash duration so a fast AI move still visibly "thinks". */
 const MIN_FLASH_MS = 180
@@ -133,6 +134,8 @@ export function GameScreen() {
   // game outcome into the stats store to drive adaptive difficulty.
   const endGame = useCallback(
     (winner: Cell) => {
+      const human = humanSideRef.current
+      playSfx(winner === EMPTY ? 'draw' : winner === human ? 'win' : 'lose')
       const s = statsRef.current
       recordResult(s, winner, humanSideRef.current)
       adaptiveRef.current = adaptiveLevel(s)
@@ -175,6 +178,7 @@ const runAITurn = useCallback(async () => {
       thinkingRef.current = false
       if (overRef.current) return
       board.apply(move, aiSide)
+        playSfx('ai')
         predictor.record(aiSide, move)
         movesRef.current.push(move)
         const outcome = board.outcome()
@@ -354,6 +358,7 @@ const runAITurn = useCallback(async () => {
       if (board.cells[index] !== EMPTY) return
       if (pending != null && !axisCross(pending, board.n).has(index)) return
       setPending(index)
+      playSfx('select')
     },
     [pending, snap.currentPlayer],
   )
@@ -369,6 +374,7 @@ const runAITurn = useCallback(async () => {
     const human = humanSideRef.current
     const { style, axis } = analyzeMove(board, human, pending)
     board.apply(pending, human)
+    playSfx('place')
     predictor.record(human, pending)
     const prof = profileRef.current
     if (prof) {
@@ -411,7 +417,10 @@ const runAITurn = useCallback(async () => {
     runAITurn()
   }, [pending, snap.currentPlayer, runAITurn, endGame])
 
-  const cancelPending = useCallback(() => setPending(null), [])
+  const cancelPending = useCallback(() => {
+    setPending(null)
+    playSfx('click')
+  }, [])
 
   // Take back the last human move (and the AI reply that followed it), so the
   // player can re-think. Works from mid-game and from the finished screen.
@@ -470,16 +479,36 @@ const runAITurn = useCallback(async () => {
     }
   }, [])
 
-  const playAgain = useCallback(() => startGame(configRef.current), [startGame])
+  const playAgain = useCallback(() => {
+    playSfx('click')
+    startGame(configRef.current)
+  }, [startGame])
 
-  const handleStart = useCallback((cfg: GameConfig) => startGame(cfg), [startGame])
+  const handleStart = useCallback((cfg: GameConfig) => {
+    playSfx('click')
+    startGame(cfg)
+  }, [startGame])
 
-  const openMenu = useCallback(() => setMenuVisible(true), [])
+  const openMenu = useCallback(() => {
+    playSfx('click')
+    setMenuVisible(true)
+  }, [])
+
+  const onHint = useCallback(() => {
+    playSfx('click')
+    void showHint()
+  }, [showHint])
+
+  const onUndo = useCallback(() => {
+    playSfx('click')
+    undoMove()
+  }, [undoMove])
 
 // "How to play" from the menu: run a live AI-vs-AI demo behind the guide
 // overlay so the animation literally shows how a game (and a win) works.
 const showHowTo = useCallback(
   (cfg: GameConfig) => {
+    playSfx('click')
     setWelcomeMode('howto')
     setWelcomeVisible(true)
     startDemo(cfg)
@@ -488,6 +517,7 @@ const showHowTo = useCallback(
 )
 
   const dismissWelcome = useCallback(() => {
+    playSfx('click')
     setWelcomeVisible(false)
     void setWelcomed()
     setMenuVisible(true)
@@ -537,8 +567,8 @@ const showHowTo = useCallback(
             humanSide={config.humanSide}
             onPlayAgain={playAgain}
             onNewGame={openMenu}
-            onHint={showHint}
-            onUndo={undoMove}
+            onHint={onHint}
+            onUndo={onUndo}
           />
         </View>
       )}

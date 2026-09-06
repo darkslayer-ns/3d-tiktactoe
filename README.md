@@ -1,39 +1,105 @@
-# ISOCUBE — 3D Tic-Tac-Toe with an on-device neural network
+# ISOCUBE — build a transformer from scratch, and ship it in a game
 
-A full-stack 3D tic-tac-toe (n×n×n) with a small transformer that plays on
-device — no server, no data collection, works offline. The AI is a single
-**~106k-parameter transformer** (`d_model=64`, 8 heads, 2 layers) trained by
-self-play and solver distillation, ported to C++ and embedded straight into the
-mobile binary.
+<img src="mobile-rn/assets/isocube_logo.png" width="360" alt="ISOCUBE logo">
+
+> A free, open-source, end-to-end project on **how to build a transformer**:
+> design a small transformer, teach it to play 3D tic-tac-toe (n×n×n) with
+> **supervised distillation followed by self-play RL**, port it to **C++**,
+> and embed it into an **iOS / Android game that runs 100% on-device** — no
+> server, no data collection, works offline.
+
+The AI is a single **~106k-parameter transformer** (`d_model=64`, 8 heads,
+2 layers). It treats every cell of the cube as one token (like a word in a
+sentence) and is **size-agnostic**: one trained model plays any cube size
+from 3×3×3 up to 6×6×6. The same hand-written C++ engine that powers the
+Python backend is compiled into the app and called through JSI.
 
 ```
-                    ┌──────────────────────────────┐
-                    │  TRAINING (offline, Python)   │
-                    │  self-play  +  solver distill │
-                    │  → PyTorch checkpoint (.pt)   │
-                    └──────────────┬───────────────┘
-                                   │ export_weights.py
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │  TFM1 binary  (cpp/model.bin) │
-                    │  + embed_weights.py → C array │
-                    │  tfm_model_data.h (in-app)    │
-                    └──────────────┬───────────────┘
-                                   │ C++ port (byte-for-byte parity)
-                                   ▼
-   ┌────────────┐   board → tokens   ┌──────────────────────────────┐
-   │ BoardState │ ──────────────────► │  tfm::Model::forward(n)      │
-   │  n×n×n     │  (normalize + mask) │  → value logit + policy logits│
-   └────────────┘                     └──────────────┬───────────────┘
-                                                     │ JSI / TurboModule
-                                                     ▼
-                                   ┌──────────────────────────────┐
-                                   │  LookaheadMover (TS)         │
-                                   │  shallow search + difficulty │
-                                   └──────────────┬───────────────┘
-                                                  ▼
-                                            chosen move
+                    ┌────────────────────────────────────────────┐
+                    │  TRAINING (offline, Python/PyTorch)         │
+                    │  Phase 1: supervised distillation           │
+                    │           (imitate the alpha-beta solver)   │
+                    │  Phase 2: RL self-play (policy gradient)    │
+                    │  Phase 3: difficulty calibration            │
+                    │  → PyTorch checkpoint (.pt)                 │
+                    └──────────────────────┬──────────────────────┘
+                                           │ cpp/tools/export_weights.py
+                                           ▼
+                    ┌────────────────────────────────────────────┐
+                    │  TFM1 binary  (cpp/model.bin)              │
+                    │  + embed_weights.py → C array              │
+                    │  tfm_model_data.h (in-app)                 │
+                    └──────────────────────┬──────────────────────┘
+                                           │ C++ port (byte-for-byte parity)
+                                           ▼
+   ┌────────────┐   board → tokens   ┌────────────────────────────┐
+   │ BoardState │ ──────────────────► │  tfm::Model::forward(n)   │
+   │  n×n×n     │  (normalize + mask) │  → value logit + policy    │
+   └────────────┘                     └────────────┬───────────────┘
+                                                   │ JSI / TurboModule
+                                                   ▼
+                    ┌────────────────────────────────────────────┐
+                    │  LookaheadMover (TS) — shallow search +     │
+                    │  difficulty knobs over the SAME weights     │
+                    └──────────────────────┬──────────────────────┘
+                                           ▼
+                                       chosen move
 ```
+
+---
+
+## How the AI was built (the training journey)
+
+### Phase 1 — Supervised pretraining: learn from a strong teacher
+
+Before it can improve itself, the model first learns to **imitate the Go
+alpha-beta solver** (`backend/distill`). The solver plays millions of games
+and every position is labelled with its **best move** and **game value**:
+
+```
+┌────────────┐  positions  ┌──────────────┐  best move ┌─────────────┐
+│ alpha-beta │ ───────────►│  transformer │ ◄───────── │ train policy│
+│  solver    │  + values   │    (net)     │   + value  │ + value     │
+└────────────┘             └──────────────┘            └─────────────┘
+```
+
+This is plain **supervised learning** — `L_policy` = cross-entropy against the
+solver's best move, `L_value` = binary cross-entropy against the game outcome.
+Train/eval are split by **whole games**, so eval positions never leak from
+training games. It gives the network a strong policy/value baseline quickly.
+
+### Phase 2 — RL: self-play policy gradient
+
+Then the network improves by **playing itself**. At every position it samples
+a move from its **own** softmax policy (a `temperature` controls exploration),
+plays a full game, and the game's outcome becomes the value target for every
+position it visited:
+
+```
+┌──────────┐  sample move ┌──────────┐  play game ┌──────────┐
+│ network  │ ────────────► │  game    │ ─────────► │ outcome  │
+│ (policy) │   temperature │  self    │            │ win/loss │
+└──────────┘   exploration └──────────┘            └────┬─────┘
+                                                        │ value target
+                                                        ▼
+                    store every position with its game outcome
+                    → value head learns "was this position winning?"
+                    → policy head learns "what did the winner play?"
+```
+
+Because a better network generates better games next round, this is the
+classic **policy-gradient / self-play** loop
+(`training/train_universal.py` — one size-agnostic model trained on a mix of
+3×3×3, 4×4×4 and 6×6×6 games, so a 6×6-trained model transfers to 3×3).
+
+### Phase 3 — Difficulty calibration
+
+`retrain_selfplay.py` calibrates each difficulty's runtime knobs (mistake
+rate, temperature, lookahead depth) against the **real on-device mover**, so a
+casual human wins roughly the intended share per level.
+
+The training code lives in `dev/training/` and `dev/scripts/` (see
+[Repo map](#repo-map)).
 
 ---
 
@@ -60,8 +126,8 @@ norm   = [ 0, 2, 0, 1, 0, ... ]   every non-empty O (2) becomes X (1),
 mask   = [ 1, 0, 1, 0, 1, ... ]   1 where empty (legal moves)
 ```
 
-> `mobile-rn/src/ai/engine.ts` and `training/selfplay.py:_state` implement the
-> same normalization; the C++ side re-checks it (`TfmEngine.cpp`).
+> `mobile-rn/src/ai/engine.ts` and `dev/training/selfplay.py:_state` implement
+> the same normalization; the C++ side re-checks it (`TfmEngine.cpp`).
 
 ---
 
@@ -214,57 +280,7 @@ and is checked byte-for-byte against the reference graph by a parity test
 
 ---
 
-## 6. Training
-
-The model is trained offline (Python/PyTorch) with **two complementary
-sources of supervision**:
-
-### 6a. Self-play (policy-gradient)
-
-```
-┌──────────┐  sample move ┌──────────┐  play game ┌──────────┐
-│ network  │ ────────────► │  game    │ ─────────► │ outcome  │
-│ (policy) │   temperature │  self    │            │ win/loss │
-└──────────┘   exploration └──────────┘            └────┬─────┘
-                                                       │ value target
-                                                       ▼
-                    store every position with its game outcome
-                    → value head learns "was this position winning?"
-                    → policy head learns "what did the winner play?"
-```
-
-At every position the network samples a move from its **own** softmax policy
-(`temperature` controls exploration); the game's outcome becomes the value
-target for every stored position. The improved network generates better games
-next round (`training/train_universal.py` — one size-agnostic model trained on
-a mix of 3×3×3, 4×4×4, 6×6×6 games).
-
-### 6b. Solver distillation
-
-Alternative/auxiliary: the transformer learns to **imitate the Go alpha-beta
-solver** (`backend/distill`). Each sample is a board position labeled with the
-solver's best move and game value:
-
-```
-┌────────────┐  positions  ┌──────────────┐  best move ┌─────────────┐
-│ alpha-beta │ ───────────►│  transformer │ ◄───────── │ train policy│
-│  solver    │  + values   │    (net)     │   + value  │ + value     │
-└────────────┘             └──────────────┘            └─────────────┘
-```
-
-Train/eval are split by **whole games** so eval positions never come from
-training games (no leakage).
-
-### Losses
-
-```
-L_policy = cross_entropy(policy_logits, best_move)      # over legal moves only
-L_value  = binary_cross_entropy_with_logits(value, win?) # 1 = side-to-move wins
-```
-
----
-
-## 7. Export → on-device C++
+## 6. Export → on-device C++
 
 ```
 PyTorch model (.pt)
@@ -288,7 +304,7 @@ the PyTorch graph.
 
 ---
 
-## 8. Search + difficulty (runtime behavior)
+## 7. Search + difficulty (runtime behavior)
 
 The raw network is combined with a shallow lookahead to decide moves:
 
@@ -305,27 +321,86 @@ LookaheadMover.chooseMove(side)
 ```
 
 **Difficulty is not a different model** — it's runtime search parameters over
-the SAME weights (`src/ai/mover.ts:DIFFICULTY`):
+the SAME weights (`mobile-rn/src/ai/mover.ts:DIFFICULTY`):
 
 |            | Easy (≈65% AI win) | Medium (≈80%) | Hard (≈95%) |
 |------------|---------------------|---------------|-------------|
-| search depth | 1                  | 2             | 4           |
-| deliberate blunders | up to 6 @ 45% | up to 2 @ 30% | none       |
-| move randomness | high (temp 1.1) | med (0.6)     | near-greedy (0.1) |
+| search depth | 1 | 3 | 4 |
+| deliberate blunders | up to 6 **random** moves (~25% of neutral moves; ~90% when it's already clearly winning) | exactly **1 suboptimal** move, only when about to win | none |
+| move randomness | high (temp 1.1) | medium (temp 0.5) | near-greedy (temp 0.1) |
+| extra | defensive bias; adapts to the player's results | — | — |
 
 The `OpponentPredictor` additionally keeps a persistent, decaying affinity map
 of the moves *you* play (boosted when you win) so the AI gradually learns your
 tendencies across sessions — heuristic, on-device, no weight updates.
+Difficulty also adapts to your recent results (win too much → it hardens; lose
+too much → it eases up).
+
+---
+
+## Build & run
+
+Quick orientation — the shipping app is `mobile-rn/`, the shared engine is
+`cpp/`, all offline ML/dev tooling is `dev/`. Full per-component docs:
+
+- [mobile-rn/README.md](mobile-rn/README.md) — the iOS/Android app: build, run,
+  APK, tests
+- [mobile-rn/native/README.md](mobile-rn/native/README.md) — the C++ JSI
+  engine + iOS/Android build wiring
+- `dev/scripts/`, `dev/training/` — training, export and calibration scripts
+- `dev/frontend/` — the web frontend (Vite/React)
+
+### 0. Requirements (a real machine)
+
+- **Python 3 + PyTorch** (training only)
+- **C++17** compiler + CMake (engine + parity)
+- **iOS**: macOS + Xcode + CocoaPods
+- **Android**: Android SDK + **NDK 27.1.12297006** + JDK 17
+
+### 1. The engine (C++ → parity)
+
+```bash
+make cpp          # builds parity_test + tfm-cli + libmodel.so into cpp/build
+make parity       # full C++ ⇄ PyTorch parity check (fixtures + random cross-check)
+```
+
+### 2. The mobile app
+
+```bash
+cd mobile-rn
+npm install
+npx expo prebuild          # runs the withTfmEngine plugin (writes android/ + ios/)
+npx expo run:ios           # requires macOS + Xcode + CocoaPods
+npx expo run:android       # requires Android SDK + NDK + JDK 17
+```
+
+> **iOS registration (one manual step after prebuild):** the engine's C++
+> TurboModule must be registered. Add `mobile-rn/native/TfmEngineRegistration.mm`
+> to the `ISOCUBE` target (it registers `TfmEngine` via the global module map).
+> See `mobile-rn/native/README.md`.
+
+### 3. A signed release APK
+
+```bash
+make apk                    # prebuild + embed weights + gradle assembleRelease
+# or, for a signed arm64 APK:
+bash mobile-rn/scripts/build_apk.sh --release
+```
+
+Output: `mobile-rn/dist-apk/neoncube-phone-release.apk` (signed).
+
+### 4. Tests
+
+```bash
+make test                   # cpp parity + backend pytest + mobile jest
+```
 
 ---
 
 ## Repo map
 
-The repo is split into the shipping app (`mobile-rn/`) plus the shared engine it
-compiles (`cpp/`), with all offline development/ML tooling under `dev/`.
-
 ```
-mobile-rn/                 the ISOCUBE app (Expo/React Native)
+mobile-rn/                 the ISOCUBE app (Expo/React Native 0.86)
 cpp/                       shared C++ transformer engine (compiled into the app)
 dev/                       everything else: training, backend, web, tooling
 dev/
@@ -333,18 +408,17 @@ dev/
   training/                PyTorch training: model.py, selfplay, trainers
   scripts/                 training/export/calibration scripts
   frontend/                web frontend (Vite/React)
-  mobile/                  legacy Flutter prototype (unmaintained)
   model_universal.pt       trained checkpoint
 ```
 
 ML parts in detail:
 
 ```
-training/
+dev/training/
   model.py            ValuePolicyTransformer (tokenizer, embeds, encoder, heads)
   selfplay.py         self-play game generation
-  train_universal.py  size-agnostic self-play trainer
-  train_distill.py    alpha-beta distillation trainer
+  train_universal.py  size-agnostic self-play (RL) trainer
+  train_distill.py    alpha-beta distillation (supervised) trainer
   eval.py             strength evaluation vs random
   torch_loader.py     checkpoint loader + TorchModelAdapter (eval seam)
 dev/backend/
@@ -352,14 +426,28 @@ dev/backend/
   ml/                 game-server AI wiring (torch-free)
 cpp/
   include/tfm/*.hpp   C++ model: model.hpp, layers.hpp, ops.hpp, weights.hpp
+  src/                model.cpp, layers.cpp, ops.cpp, weights.cpp, search.cpp
   tools/export_weights.py   PyTorch → TFM1 binary
   tools/check_parity.py     C++ vs PyTorch parity
   tests/parity.cpp          on-host parity test
 mobile-rn/
   native/cpp/TfmEngine.cpp  JSI/TurboModule host functions
   native/include/tfm_model_data.h   embedded weights (C array)
-  scripts/embed_weights.py         bin → C header
+  native/TfmEngineRegistration.mm   iOS global registrar (add to target)
+  scripts/embed_weights.py          bin → C header
   src/ai/engine.ts        normalization + eval seam
   src/ai/mover.ts         lookahead search + difficulties
   src/ai/predictor.ts     opponent modeling (persistent affinity)
+  src/three/              Blender-baked 3D geometry (assets → TS)
 ```
+
+---
+
+## License
+
+GNU General Public License v3.0 — see [LICENSE](LICENSE).
+
+This is a free, from-scratch project written to show how a transformer works
+and how to take it all the way to a shipping product: tokenization, embedding,
+attention, training (supervised → self-play RL), a byte-for-byte C++ port, and
+on-device inference in a real mobile game.

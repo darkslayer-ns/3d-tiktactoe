@@ -89,6 +89,10 @@ Outputs:
 `mobile-rn/android/app/build/outputs/apk/release/app-release.apk` (unsigned) and
 `mobile-rn/dist-apk/neoncube-phone-release.apk` (signed).
 
+> **Signing secrets.** `build_apk.sh` reads `KEY_STORE_PASS` / `KEY_PASS` from the
+> gitignored `mobile-rn/scripts/build-secrets.env` (never committed). See the
+> root [README](../README.md) "Build & run" section.
+
 Debug (install on a connected device/emulator):
 
 ```bash

@@ -43,6 +43,44 @@ interface TfmEngineNative {
     depth: number,
     n: number,
   ) => { players: number[]; indices: number[] }
+  aiStart: (config: NativeAIConfig) => boolean
+  aiApplyMove: (player: number, cell: number) => boolean
+  aiSetBoard: (cells: number[]) => boolean
+  aiChooseMove: (player: number) => Promise<NativeAIDecision>
+  aiHint: (player: number) => Promise<number>
+  aiEndGame: (winner: number) => NativeAIState
+  aiState: () => NativeAIState
+}
+
+export interface NativeAIConfig {
+  n: number
+  humanSide: number
+  difficulty: string
+  aggression: number
+  adaptive: number
+  affinity: number[]
+  profile: number[]
+  perception: number[]
+  stats: number[]
+}
+
+export interface NativeAIState {
+  affinity: number[]
+  profile: number[]
+  perception: number[]
+  stats: number[]
+  adaptive: number
+  aggression: number
+}
+
+export interface NativeAIDecision {
+  move: number
+  kind: 'search' | 'blunder' | 'shift' | 'random'
+  value: number
+  depth: number
+  scored: Array<{ index: number; value: number }>
+  players: number[]
+  indices: number[]
 }
 
 /**
@@ -169,4 +207,46 @@ export function predictedLine(
   const N = native()
   if (!N) throw new Error('TfmEngine not available')
   return N.predictedLine(cells, ai, chosen, depth, n)
+}
+
+export function aiStart(config: NativeAIConfig): boolean {
+  const N = native()
+  if (!N) return false
+  return N.aiStart(config)
+}
+
+export function aiApplyMove(player: number, cell: number): boolean {
+  const N = native()
+  if (!N) throw new Error('TfmEngine not available')
+  return N.aiApplyMove(player, cell)
+}
+
+export function aiSetBoard(cells: number[]): boolean {
+  const N = native()
+  if (!N) throw new Error('TfmEngine not available')
+  return N.aiSetBoard(cells)
+}
+
+export function aiChooseMove(player: number): Promise<NativeAIDecision> {
+  const N = native()
+  if (!N) throw new Error('TfmEngine not available')
+  return N.aiChooseMove(player)
+}
+
+export function aiHint(player: number): Promise<number> {
+  const N = native()
+  if (!N) throw new Error('TfmEngine not available')
+  return N.aiHint(player)
+}
+
+export function aiEndGame(winner: number): NativeAIState {
+  const N = native()
+  if (!N) throw new Error('TfmEngine not available')
+  return N.aiEndGame(winner)
+}
+
+export function aiState(): NativeAIState {
+  const N = native()
+  if (!N) return { affinity: [], profile: [], perception: [], stats: [], adaptive: 0, aggression: 0 }
+  return N.aiState()
 }

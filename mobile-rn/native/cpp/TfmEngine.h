@@ -7,6 +7,8 @@
 
 #include <memory>
 
+#include "NativeAI.h"
+
 namespace tfmengine {
 
 // Shared, mutex-guarded model holder. Definition lives in TfmEngine.cpp.
@@ -25,6 +27,13 @@ enum class TfmMethod {
   Numel,
   SearchScored,
   PredictedLine,
+  AiStart,
+  AiApplyMove,
+  AiSetBoard,
+  AiChooseMove,
+  AiHint,
+  AiEndGame,
+  AiState,
 };
 
 // Installs `globalThis.__TfmEngine`, a jsi::HostObject exposing the host
@@ -88,6 +97,41 @@ class TfmEngineTurboModule
       const facebook::jsi::Value* args,
       size_t count);
   static facebook::jsi::Value predictedLineHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
+  static facebook::jsi::Value aiStartHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
+  static facebook::jsi::Value aiApplyMoveHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
+  static facebook::jsi::Value aiSetBoardHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
+  static facebook::jsi::Value aiChooseMoveHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
+  static facebook::jsi::Value aiHintHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
+  static facebook::jsi::Value aiEndGameHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
+  static facebook::jsi::Value aiStateHost(
       facebook::jsi::Runtime& rt,
       facebook::react::TurboModule& module,
       const facebook::jsi::Value* args,

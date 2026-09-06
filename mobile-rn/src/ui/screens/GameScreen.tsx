@@ -21,14 +21,12 @@ import { WelcomeOverlay } from '../components/WelcomeOverlay'
 import { GameOverOverlay } from '../components/GameOverOverlay'
 import { EMPTY, P1, P2, type Cell } from '../../game/types'
 import { Board } from '../../game/board'
-import { createNativeEngine } from '../../ai/engine'
-import { OpponentPredictor } from '../../ai/predictor'
-import { LookaheadMover } from '../../ai/mover'
-import { applyResult, type Affinity } from '../../ai/opponentMemory'
+import { isAvailable, aiApplyMove, aiChooseMove, aiEndGame, aiHint, aiSetBoard, aiStart, type NativeAIConfig, type NativeAIState } from '../../native/TfmEngine'
+import { type Affinity } from '../../ai/opponentMemory'
 import { loadAffinity, saveAffinity, getWelcomed, setWelcomed, loadProfile, saveProfile, loadStats, saveStats, loadPerception, savePerception } from '../../ai/opponentStorage'
-import { analyzeMove, PerceptionProfile, PlayerProfile } from '../../ai/profile'
-import { adaptiveLevel, emptyStats, recordResult, type GameStats } from '../../ai/stats'
-import { emptyState, type EvalEngine, type GameConfig, type GameState } from '../../ai/types'
+import type { ProfileCounts } from '../../ai/profile'
+import { emptyStats, type GameStats } from '../../ai/stats'
+import { emptyState, type GameConfig, type GameState } from '../../ai/types'
 import { IS_INTERNAL_BUILD } from '../../dev/internalBuild'
 import { ModelKnowledgePanel } from '../../dev/ModelKnowledgePanel'
 import { playSfx, hapticSelection } from '../../audio/SoundManager'
@@ -38,6 +36,49 @@ const MIN_FLASH_MS = 180
 
 const ENGINE_UNAVAILABLE_MSG =
   'Model engine not available — build with expo run:android/ios'
+
+function flattenAffinity(aff: Affinity | null): number[] {
+  if (!aff) return []
+  const out: number[] = []
+  for (const [side, row] of aff) for (const [cell, weight] of row) out.push(side, cell, weight)
+  return out
+}
+
+function nativeConfig(
+  cfg: GameConfig,
+  affinity: Affinity | null,
+  profile: ProfileCounts,
+  perception: { axis: number; face: number; space: number },
+  stats: GameStats,
+  adaptive: number,
+): NativeAIConfig {
+  return {
+    n: cfg.size,
+    humanSide: cfg.humanSide,
+    difficulty: cfg.difficulty,
+    aggression: profile.attack + profile.defend < 0.5 ? 0 : (profile.attack - profile.defend) / (profile.attack + profile.defend),
+    adaptive,
+    affinity: flattenAffinity(affinity),
+    profile: [profile.attack, profile.defend, profile.neutral],
+    perception: [perception.axis, perception.face, perception.space],
+    stats: [stats.wins, stats.losses, stats.draws],
+  }
+}
+
+function applyNativeState(target: NativeAIState, affinityRef: { current: Affinity | null }, profileRef: { current: ProfileCounts }, perceptionRef: { current: { axis: number; face: number; space: number } }, statsRef: { current: GameStats }) {
+  const affinity: Affinity = new Map()
+  for (let i = 0; i + 2 < target.affinity.length; i += 3) {
+    const side = target.affinity[i]
+    const cell = target.affinity[i + 1]
+    const row = affinity.get(side) ?? new Map<number, number>()
+    row.set(cell, target.affinity[i + 2])
+    affinity.set(side, row)
+  }
+  affinityRef.current = affinity
+  profileRef.current = { attack: target.profile[0] ?? 0, defend: target.profile[1] ?? 0, neutral: target.profile[2] ?? 0 }
+  perceptionRef.current = { axis: target.perception[0] ?? 0, face: target.perception[1] ?? 0, space: target.perception[2] ?? 0 }
+  statsRef.current = { wins: target.stats[0] ?? 0, losses: target.stats[1] ?? 0, draws: target.stats[2] ?? 0 }
+}
 
 export function GameScreen() {
   const insets = useSafeAreaInsets()
@@ -52,14 +93,12 @@ export function GameScreen() {
   const [resultVisible, setResultVisible] = useState(false)
   const [knowledgeVisible, setKnowledgeVisible] = useState(false)
 
-  const engineRef = useRef<EvalEngine | null>(null)
+  const engineRef = useRef<boolean>(false)
   const boardRef = useRef<Board | null>(null)
-  const predictorRef = useRef<OpponentPredictor | null>(null)
-  const moverRef = useRef<LookaheadMover | null>(null)
   const affinityRef = useRef<Affinity | null>(null)
   const affinityLoadRef = useRef<Promise<Affinity> | null>(null)
-  const profileRef = useRef<PlayerProfile | null>(null)
-  const perceptionRef = useRef<PerceptionProfile | null>(null)
+  const profileRef = useRef<ProfileCounts>({ attack: 0, defend: 0, neutral: 0 })
+  const perceptionRef = useRef<{ axis: number; face: number; space: number }>({ axis: 0, face: 0, space: 0 })
   const statsRef = useRef<GameStats>(emptyStats())
   const adaptiveRef = useRef(0)
   const humanSideRef = useRef<Cell>(1)
@@ -78,12 +117,8 @@ export function GameScreen() {
 
   // Create the native engine once; surface load failures gracefully.
   useEffect(() => {
-    try {
-      engineRef.current = createNativeEngine()
-    } catch {
-      engineRef.current = null
-      setEngineError(ENGINE_UNAVAILABLE_MSG)
-    }
+    engineRef.current = isAvailable()
+    if (!engineRef.current) setEngineError(ENGINE_UNAVAILABLE_MSG)
   }, [])
 
   // Load the persistent opponent memory once; games started before it resolves
@@ -98,20 +133,21 @@ export function GameScreen() {
   // Load the persistent player-style profile (attacker/defender) once.
   useEffect(() => {
     void loadProfile().then((p) => {
-      if (p) profileRef.current = new PlayerProfile(0.95, p)
-      else profileRef.current = new PlayerProfile()
+      if (p) profileRef.current = p
     })
   }, [])
 
   // Load the persistent 3D-perception profile + game stats once.
   useEffect(() => {
     void loadPerception().then((p) => {
-      perceptionRef.current = new PerceptionProfile(0.95, p ?? undefined)
+      if (p) perceptionRef.current = p
     })
     void loadStats().then((s) => {
       if (s) {
         statsRef.current = s
-        adaptiveRef.current = adaptiveLevel(s)
+        const total = s.wins + s.losses
+        const rate = total < 2 ? 0.5 : s.wins / total
+        adaptiveRef.current = Math.max(-1, Math.min(1, (0.55 - rate) * 2.5))
       }
     })
   }, [])
@@ -143,18 +179,13 @@ export function GameScreen() {
     (winner: Cell) => {
       const human = humanSideRef.current
       playSfx(winner === EMPTY ? 'draw' : winner === human ? 'win' : 'lose')
-      const s = statsRef.current
-      recordResult(s, winner, humanSideRef.current)
-      adaptiveRef.current = adaptiveLevel(s)
-      void saveStats(s)
-
-      const predictor = predictorRef.current
-      const aff = affinityRef.current
-      if (predictor && aff) {
-        const loser: Cell = winner === P1 ? P2 : P1
-        applyResult(aff, winner, loser)
-        persistAffinity(aff)
-      }
+      const state = aiEndGame(winner)
+      applyNativeState(state, affinityRef, profileRef, perceptionRef, statsRef)
+      adaptiveRef.current = state.adaptive
+      void saveStats(statsRef.current)
+      void saveProfile(profileRef.current)
+      void savePerception(perceptionRef.current)
+      persistAffinity(affinityRef.current ?? new Map())
     },
     [persistAffinity],
   )
@@ -164,7 +195,7 @@ export function GameScreen() {
       resumeAiRef.current = true
       return
     }
-    if (!boardRef.current || !moverRef.current || !predictorRef.current) return
+    if (!boardRef.current || !engineRef.current) return
     if (overRef.current || thinkingRef.current) return
     const epoch = aiEpochRef.current
     const aiSide: Cell = humanSideRef.current === P1 ? P2 : P1
@@ -175,13 +206,12 @@ export function GameScreen() {
     if (timerRef.current) clearTimeout(timerRef.current)
     const startedAt = Date.now()
     const board = boardRef.current
-    const mover = moverRef.current
-    const predictor = predictorRef.current
-    if (!board || !mover || !predictor) return
+    if (!board) return
     if (overRef.current) return
     inferenceInFlightRef.current = true
     try {
-      const move = await mover.chooseMove(aiSide)
+      const decision = await aiChooseMove(aiSide)
+      const move = decision.move
       if (epoch !== aiEpochRef.current || appStateRef.current !== 'active') {
         inferenceInFlightRef.current = false
         thinkingRef.current = false
@@ -216,8 +246,8 @@ export function GameScreen() {
       }
       thinkingRef.current = false
       board.apply(move, aiSide)
+      aiApplyMove(aiSide, move)
       playSfx('ai')
-      predictor.record(aiSide, move)
       movesRef.current.push(move)
       const outcome = board.outcome()
       overRef.current = outcome.over
@@ -253,9 +283,7 @@ export function GameScreen() {
       return
     }
     const board = boardRef.current
-    const mover = moverRef.current
-    const predictor = predictorRef.current
-    if (!board || !mover || !predictor) return
+    if (!board || !engineRef.current) return
     if (overRef.current || !demoRef.current) return
     const side = turnRef.current
     const epoch = aiEpochRef.current
@@ -267,7 +295,8 @@ export function GameScreen() {
           return
         }
         inferenceInFlightRef.current = true
-        const move = await mover.chooseMove(side)
+        const decision = await aiChooseMove(side)
+        const move = decision.move
         if (
           overRef.current ||
           !demoRef.current ||
@@ -283,7 +312,7 @@ export function GameScreen() {
           return
         }
         board.apply(move, side)
-        predictor.record(side, move)
+        aiApplyMove(side, move)
         movesRef.current.push(move)
         const outcome = board.outcome()
         if (outcome.over) {
@@ -368,20 +397,16 @@ export function GameScreen() {
 
   const startDemo = useCallback(
     (cfg: GameConfig) => {
-      const engine = engineRef.current
-      if (!engine) {
+      if (!engineRef.current) {
         setEngineError(ENGINE_UNAVAILABLE_MSG)
         setMenuVisible(false)
         return
       }
       if (timerRef.current) clearTimeout(timerRef.current)
       const board = new Board(cfg.size)
-      // Fresh, throwaway memory — demos don't teach the AI.
-      const predictor = new OpponentPredictor(board, engine)
-      const mover = new LookaheadMover(engine, board, predictor, cfg.difficulty)
+      // Fresh native session — demos don't teach persistent memory.
+      aiStart(nativeConfig(cfg, null, { attack: 0, defend: 0, neutral: 0 }, { axis: 0, face: 0, space: 0 }, emptyStats(), 0))
       boardRef.current = board
-      predictorRef.current = predictor
-      moverRef.current = mover
       humanSideRef.current = cfg.humanSide
       configRef.current = cfg
       overRef.current = false
@@ -402,8 +427,7 @@ export function GameScreen() {
 
   const startGame = useCallback(
     async (cfg: GameConfig) => {
-      const engine = engineRef.current
-      if (!engine) {
+      if (!engineRef.current) {
         setEngineError(ENGINE_UNAVAILABLE_MSG)
         setMenuVisible(false)
         return
@@ -413,15 +437,8 @@ export function GameScreen() {
         affinityRef.current = await (affinityLoadRef.current ?? loadAffinity())
       }
       const board = new Board(cfg.size)
-      const predictor = new OpponentPredictor(board, engine, 0.9, affinityRef.current)
-      const mover = new LookaheadMover(engine, board, predictor, cfg.difficulty)
-      mover.setAggression(profileRef.current?.aggression() ?? 0)
-      // Hard is intentionally unbeatable; only easy/medium adapt to your results.
-      if (cfg.difficulty !== 'hard') mover.setAdaptive(adaptiveRef.current)
-      predictor.newGame()
+      aiStart(nativeConfig(cfg, affinityRef.current, profileRef.current, perceptionRef.current, statsRef.current, cfg.difficulty === 'hard' ? 0 : adaptiveRef.current))
       boardRef.current = board
-      predictorRef.current = predictor
-      moverRef.current = mover
       humanSideRef.current = cfg.humanSide
       configRef.current = cfg
       overRef.current = false
@@ -486,27 +503,14 @@ export function GameScreen() {
 
   const placeMove = useCallback(() => {
     const board = boardRef.current
-    const predictor = predictorRef.current
-    if (!board || !predictor) return
+    if (!board || !engineRef.current) return
     if (pending == null) return
     if (demoRef.current || thinkingRef.current || overRef.current) return
     if (snap.currentPlayer !== humanSideRef.current) return
     if (board.cells[pending] !== EMPTY) return
     const human = humanSideRef.current
-    const { style, axis } = analyzeMove(board, human, pending)
     board.apply(pending, human)
-    predictor.record(human, pending)
-    const prof = profileRef.current
-    if (prof) {
-      prof.record(style)
-      moverRef.current?.setAggression(prof.aggression())
-      void saveProfile(prof.toJSON())
-    }
-    const perc = perceptionRef.current
-    if (perc) {
-      perc.record(axis)
-      void savePerception(perc.toJSON())
-    }
+    aiApplyMove(human, pending)
     movesRef.current.push(pending)
     const outcome = board.outcome()
     setPending(null)
@@ -568,6 +572,7 @@ export function GameScreen() {
     if (lastHuman < 0) return
     for (const m of hist.slice(lastHuman)) board.cells[m] = EMPTY
     movesRef.current = hist.slice(0, lastHuman)
+    aiSetBoard(board.cells)
     if (timerRef.current) clearTimeout(timerRef.current)
     overRef.current = false
     thinkingRef.current = false
@@ -589,12 +594,11 @@ export function GameScreen() {
 
   // Recommend the model's best move for the human and pre-select it.
   const showHint = useCallback(async () => {
-    const mover = moverRef.current
-    if (!mover) return
+    if (!engineRef.current) return
     if (demoRef.current || thinkingRef.current || overRef.current) return
     const human = humanSideRef.current
     try {
-      const hint = await mover.getHint(human)
+      const hint = await aiHint(human)
       if (hint < 0) return
       if (demoRef.current || overRef.current) return
       setPending(hint)
@@ -726,14 +730,14 @@ const showHowTo = useCallback(
         <ModelKnowledgePanel
           visible={knowledgeVisible}
           onClose={() => setKnowledgeVisible(false)}
-          engine={engineRef.current}
+          engine={null}
           board={boardRef.current}
           humanSide={config.humanSide}
           difficulty={config.difficulty}
-          predictor={predictorRef.current}
-          mover={moverRef.current}
-          profile={profileRef.current}
-          perception={perceptionRef.current}
+          predictor={null}
+          mover={null}
+          profile={null}
+          perception={null}
           stats={statsRef.current}
           adaptive={adaptiveRef.current}
         />

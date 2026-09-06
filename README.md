@@ -14,36 +14,14 @@ sentence) and is **size-agnostic**: one trained model plays any cube size
 from 3×3×3 up to 6×6×6. The same hand-written C++ engine that powers the
 Python backend is compiled into the app and called through JSI.
 
-```
-                    ┌────────────────────────────────────────────┐
-                    │  TRAINING (offline, Python/PyTorch)         │
-                    │  Phase 1: supervised distillation           │
-                    │           (imitate the alpha-beta solver)   │
-                    │  Phase 2: RL self-play (policy gradient)    │
-                    │  Phase 3: difficulty calibration            │
-                    │  → PyTorch checkpoint (.pt)                 │
-                    └──────────────────────┬──────────────────────┘
-                                           │ cpp/tools/export_weights.py
-                                           ▼
-                    ┌────────────────────────────────────────────┐
-                    │  TFM1 binary  (cpp/model.bin)              │
-                    │  + embed_weights.py → C array              │
-                    │  tfm_model_data.h (in-app)                 │
-                    └──────────────────────┬──────────────────────┘
-                                           │ C++ port (byte-for-byte parity)
-                                           ▼
-   ┌────────────┐   board → tokens   ┌────────────────────────────┐
-   │ BoardState │ ──────────────────► │  tfm::Model::forward(n)   │
-   │  n×n×n     │  (normalize + mask) │  → value logit + policy    │
-   └────────────┘                     └────────────┬───────────────┘
-                                                   │ JSI / TurboModule
-                                                   ▼
-                    ┌────────────────────────────────────────────┐
-                    │  LookaheadMover (TS) — shallow search +     │
-                    │  difficulty knobs over the SAME weights     │
-                    └──────────────────────┬──────────────────────┘
-                                           ▼
-                                       chosen move
+```mermaid
+flowchart TD
+    TR["TRAINING (offline, Python/PyTorch)<br/>Phase 1: supervised distillation (imitate the alpha-beta solver)<br/>Phase 2: RL self-play (policy gradient)<br/>Phase 3: difficulty calibration<br/>→ PyTorch checkpoint (.pt)"]
+    TR -->|"cpp/tools/export_weights.py"| BIN["TFM1 binary (cpp/model.bin)<br/>+ embed_weights.py → C array → tfm_model_data.h (in-app)"]
+    BIN -->|"C++ port (byte-for-byte parity)"| FWD["tfm::Model::forward(n)<br/>→ value logit + policy logits"]
+    BS["BoardState (n×n×n)"] -->|"board → tokens (normalize + mask)"| FWD
+    FWD -->|"JSI / TurboModule"| MVR["LookaheadMover (TS)<br/>shallow search + difficulty knobs over the SAME weights"]
+    MVR --> CH["chosen move"]
 ```
 
 ---
@@ -81,11 +59,13 @@ Before it can improve itself, the model first learns to **imitate the Go
 alpha-beta solver** (`backend/distill`). The solver plays millions of games
 and every position is labelled with its **best move** and **game value**:
 
-```
-┌────────────┐  positions  ┌──────────────┐  best move ┌─────────────┐
-│ alpha-beta │ ───────────►│  transformer │ ◄───────── │ train policy│
-│  solver    │  + values   │    (net)     │   + value  │ + value     │
-└────────────┘             └──────────────┘            └─────────────┘
+```mermaid
+flowchart LR
+    S["alpha-beta solver"] -->|"positions + values"| T["transformer (net)"]
+    S -->|"best move"| LP["L_policy (cross-entropy)"]
+    S -->|"game value"| LV["L_value (binary CE)"]
+    T --> LP
+    T --> LV
 ```
 
 This is plain **supervised learning** — `L_policy` = cross-entropy against the
@@ -100,16 +80,14 @@ a move from its **own** softmax policy (a `temperature` controls exploration),
 plays a full game, and the game's outcome becomes the value target for every
 position it visited:
 
-```
-┌──────────┐  sample move ┌──────────┐  play game ┌──────────┐
-│ network  │ ────────────► │  game    │ ─────────► │ outcome  │
-│ (policy) │   temperature │  self    │            │ win/loss │
-└──────────┘   exploration └──────────┘            └────┬─────┘
-                                                        │ value target
-                                                        ▼
-                    store every position with its game outcome
-                    → value head learns "was this position winning?"
-                    → policy head learns "what did the winner play?"
+```mermaid
+flowchart TD
+    N["network (policy)"] -->|"sample move (temperature exploration)"| G["self-play game"]
+    G -->|"win / loss"| OUT["outcome"]
+    OUT -->|"value target"| STORE["store every position with its game outcome"]
+    STORE --> N
+    STORE --> VH["value head learns: was this position winning?"]
+    STORE --> PH["policy head learns: what did the winner play?"]
 ```
 
 Because a better network generates better games next round, this is the
@@ -196,24 +174,26 @@ Instead of learned position ids over `n³` flat indices (which would tie the
 model to one cube size), each cell's 3D coordinate `(x, y, z)` is normalized
 to `[0, 1]` and pushed through a small MLP:
 
-```
-coord_i = ( x/(n-1), y/(n-1), z/(n-1) )    3 inputs
-          ┌────────────────────────────┐
-pos_i  =  │ Linear(3→32) → ReLU        │
-          │ Linear(32→64)              │   d_model outputs
-          └────────────────────────────┘
-
-input_i = cell_embed(token_i) + pos_i
+```mermaid
+flowchart LR
+    CI["coord_i = (x/(n-1), y/(n-1), z/(n-1)) · 3 inputs"] --> L1["Linear(3→32) → ReLU"]
+    L1 --> L2["Linear(32→64) · d_model outputs"]
+    L2 --> PI["pos_i"]
+    CE["cell_embed(token_i)"] --> SUM["input_i = cell_embed(token_i) + pos_i"]
+    PI --> SUM
 ```
 
 Because coordinates always live in `[0,1]` regardless of `n`, **one trained
 model works for any cube size** (3×3×3, 4×4×4, … 6×6×6). This is what makes
 the "universal" model possible.
 
-```
- tokens ──► Embedding(3→64) ──┐
-                              ├── ( + ) ──► x  (N × 64)
- coords ──► CoordMLP(3→64) ──┘
+```mermaid
+flowchart LR
+    T["tokens"] --> E["Embedding(3→64)"]
+    C["coords"] --> CM["CoordMLP(3→64)"]
+    E --> SUM["(+)"]
+    CM --> SUM
+    SUM --> X["x (N × 64)"]
 ```
 
 > **Layman's take — position.** A word's *meaning* alone isn't enough; you also
@@ -251,30 +231,15 @@ diagonally through 3D space** (self-attention has no locality bias).
 > in parallel, each paying attention to a different kind of relationship
 > (e.g. one head might track straight rows, another the space diagonals).
 
-```
-                    x (N × 64)
-                        │
-              ┌─────────▼─────────┐
-              │  Multi-Head Self- │  8 heads, 64-dim, d_FF = 256
-              │  Attention (8h)   │
-              └─────────┬─────────┘
-                        │  + (residual)
-              ┌─────────▼─────────┐
-              │  LayerNorm        │
-              └─────────┬─────────┘
-                        │
-              ┌─────────▼─────────┐
-              │  Feed-Forward     │  Linear(64→256) → GELU
-              │                   │  Linear(256→64)
-              └─────────┬─────────┘
-                        │  + (residual)
-              ┌─────────▼─────────┐
-              │  LayerNorm        │
-              └─────────┬─────────┘
-                        │
-                 ┌──────┴──────┐
-                 ▼             ▼
-             value head    policy head
+```mermaid
+flowchart TD
+    X["x (N × 64)"] --> ATT["Multi-Head Self-Attention (8 heads, 64-dim, d_FF = 256)"]
+    ATT --> R1["+ (residual)"]
+    R1 --> LN1["LayerNorm"]
+    LN1 --> FF["Feed-Forward: Linear(64→256) → GELU → Linear(256→64)"]
+    FF --> R2["+ (residual)"]
+    R2 --> LN2["LayerNorm"]
+    LN2 --> H["value head / policy head"]
 ```
 
 > **Why residual connections + LayerNorm?** The "+(residual)" is a shortcut that
@@ -332,11 +297,11 @@ probs_i = softmax(policy)_i        over legal cells only
 best move = argmax over legal cells
 ```
 
-```
-                    mean ──► MLP ──► value logit ──► sigmoid ──► win prob
-                ┌───┘
- x (N×64) ──────┼───► Linear(64→1) per cell ──► logits
-                └──────────────► mask(−∞ on occupied) ──► softmax ──► policy
+```mermaid
+flowchart LR
+    X["x (N×64)"] --> M["mean → MLP → value logit → sigmoid → win prob"]
+    X --> P["Linear(64→1) per cell → logits"]
+    P --> MS["mask(−∞ on occupied) → softmax → policy"]
 ```
 
 > **Layman's take — policy.** The policy head is the "where do I move?" answer:
@@ -350,25 +315,19 @@ best move = argmax over legal cells
 
 ## 5. One forward pass — end to end
 
-```
-board (n³ cells)                     mask (n³)
-     │                                  │
-     ▼                                  ▼
- [0,2,0,1,…]                     [1,0,1,0,…]
-     │                                  │
-     ▼                                  │
- cell_embed(token) ──┐                  │
- coord_mlp(xyz) ─────┼─► x (n³×64)     │
-     ▼                │                 │
- 2 × TransformerEncoder                  │
-     ▼                 │                 │
- mean ──► value logit  │                 │
- per-cell ──► logits   │                 │
-     │                  ▼                 ▼
- sigmoid ──► P(win)    mask logits(−∞) → softmax → policy over legal moves
-     │                  │
-     ▼                  ▼
- { value: 0.63 }   { policy: [0.001, 0.02, …] }   ← returned to the mover
+```mermaid
+flowchart TD
+    B["board (n³ cells) → [0,2,0,1,…]"] --> CE["cell_embed(token)"]
+    CO["coord_mlp(xyz)"] --> X["x (n³×64)"]
+    CE --> X
+    X --> TE["2 × TransformerEncoder"]
+    TE --> MN["mean → value logit"]
+    TE --> PC["per-cell → logits"]
+    MN --> SG["sigmoid → P(win) → {value: 0.63}"]
+    M["mask (n³) → [1,0,1,0,…]"] --> MS["mask logits(−∞) → softmax → policy over legal moves → {policy: [0.001, 0.02, …]}"]
+    PC --> MS
+    SG --> RT["returned to the mover"]
+    MS --> RT
 ```
 
 The C++ implementation mirrors PyTorch **exactly** (eval mode, dropout off)
@@ -386,17 +345,12 @@ and is checked byte-for-byte against the reference graph by a parity test
 
 ## 6. Export → on-device C++
 
-```
-PyTorch model (.pt)
-      │
-      ▼  cpp/tools/export_weights.py
-TFM1 binary (self-describing)  ──►  cpp/model.bin
-      │
-      ▼  mobile-rn/scripts/embed_weights.py
-tfm_model_data.h  (const unsigned char kModelBin[])  ── compiled into the app
-      │
-      ▼  mobile-rn/native/cpp/TfmEngine.cpp  (tfm::Model, layers, ops)
-JS ⇄ C++ via JSI host functions:  load() / evalPosition(board, mask, n) / numel()
+```mermaid
+flowchart TD
+    PT["PyTorch model (.pt)"] -->|"cpp/tools/export_weights.py"| TFM["TFM1 binary (self-describing) → cpp/model.bin"]
+    TFM -->|"mobile-rn/scripts/embed_weights.py"| H["tfm_model_data.h (const unsigned char kModelBin[])"]
+    H -->|"compiled into the app"| CPP["mobile-rn/native/cpp/TfmEngine.cpp (tfm::Model, layers, ops)"]
+    CPP --> JSI["JS ⇄ C++ via JSI host functions: load() / evalPosition(board, mask, n) / numel()"]
 ```
 
 The weights ship **inside the app binary** — no filesystem I/O, no network,
@@ -421,16 +375,12 @@ the PyTorch graph.
 
 The raw network is combined with a shallow lookahead to decide moves:
 
-```
-evalPosition(board, side)
-        │
-        ▼
-LookaheadMover.chooseMove(side)
-  • immediate win / block checks
-  • score every legal move by depth-limited expected-value search
-    (uses OpponentPredictor — the net's own policy head — to model the
-    opponent's replies)
-  • final pick from the top-scored moves, temperature-tempered
+```mermaid
+flowchart TD
+    EV["evalPosition(board, side)"] --> CM["LookaheadMover.chooseMove(side)"]
+    CM --> W["immediate win / block checks"]
+    W --> SC["score every legal move by depth-limited expected-value search<br/>(uses OpponentPredictor — the net's own policy head — to model the opponent's replies)"]
+    SC --> PK["final pick from the top-scored moves, temperature-tempered"]
 ```
 
 **Difficulty is not a different model** — it's runtime search parameters over

@@ -88,6 +88,27 @@ into a labelled dataset:
   `Solver` whose transposition table stays warm across positions and games — a
   big speedup for a full-tree search.
 
+**Why it's called "distillation".** This is *knowledge distillation*: a strong,
+slow, exact **teacher** (the alpha-beta solver) transfers its expertise into a
+small, fast **student** (the transformer). The model doesn't re-learn the game
+from scratch — it copies the teacher's answers on millions of positions until it
+can reproduce them in milliseconds on a phone. `backend/distill` is the program
+that turns the teacher into a training set.
+
+**What the command-line flags mean:**
+
+```
+distill -n 3 -games 100000 -workers 8 -explore 0.15 -out distill_data.bin
+```
+
+| flag | meaning |
+|------|---------|
+| `-n 3` | the **cube size** — `-n 3` = 3×3×3 boards (27 cells), `-n 4` = 4×4×4 (64 cells), etc. |
+| `-games 100000` | how many **full games** to play; each yields ~n² labelled positions |
+| `-workers 8` | parallel goroutines (defaults to the number of CPU cores) |
+| `-explore 0.15` | chance each move is a **random** move instead of the solver's best (15%), so games vary |
+| `-out file` | output binary path |
+
 The output is a compact binary (per record: `n³` cells + move + value +
 `game_id`); the `game_id` is how the trainer splits train/eval by whole games.
 

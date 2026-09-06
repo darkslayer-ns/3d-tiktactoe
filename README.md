@@ -449,11 +449,21 @@ On top of the fixed transformer weights, the app keeps a small, persistent
 **opponent memory** — a per-side map of *which cells you like to play*,
 maintained entirely on-device (pure bookkeeping, no weight updates):
 
-```
- you play cell i   ──►  affinity[you][i] += 1      (recorded live, each move)
- you WIN a game    ──►  your played cells × 1.25   (the AI learns what beat it)
- you LOSE a game   ──►  your played cells × 0.5    (those moves are punished)
- each new game     ──►  all weights × 0.9          (recency fade)
+```mermaid
+flowchart TD
+    A["You play a move — cell i"] --> B["affinity[you][i] += 1"]
+    B --> C["Game ends"]
+    C --> R{"Result?"}
+    R -->|"You win"| W["Your played cells × 1.25 (WIN_BOOST — AI learns what beat it)"]
+    R -->|"You lose"| L["Your played cells × 0.5 (LOSS_DECAY — those moves are punished)"]
+    R -->|"Draw"| N["No change"]
+    W --> P["Saved to on-device storage (AsyncStorage)"]
+    L --> P
+    N --> P
+    P --> F["Next game: all weights × 0.9 (recency fade)"]
+    F --> S{"AI's move search"}
+    S --> D1["Deny: +DENY_WEIGHT × affinity on cells you overplay"]
+    S --> D2["Predict: policy-head replies × your attacker/defender profile"]
 ```
 
 - **Recorded live** — every move you make increments that cell's affinity for
@@ -496,6 +506,91 @@ too much → it eases up).
 > 6 times with fully random moves, and mostly *defends* instead of attacking. So
 > "difficulty" isn't a different brain — it's just how deep it thinks and how
 > often it deliberately plays badly.
+
+---
+
+## 8. Runtime data flow — what the model sees, and what happens after
+
+> **Layman's take — an assembly line.** Every AI move is a short pipeline:
+>
+> 1. **The brain only answers two questions per position.** You hand it the
+>    board; it replies with *"how likely is the side to move to win?"* and
+>    *"which empty cells look best?"* — nothing more. It has no rules, no
+>    strategy, and no memory of you.
+> 2. **The engine does the thinking after that.** It plays "what-if" scenarios a
+>    few moves ahead, guesses what *you* would play, and — the important part —
+>    decides whether to actually play the **best** move or a **deliberately
+>    weaker but still winning** one.
+
+### The model is trained to be nearly perfect — difficulty is how often it *isn't*
+
+The transformer is trained to **win**: it imitates a perfect alpha-beta solver
+(Phase 1 distillation) and then refines itself by self-play (Phase 2 RL), so its
+"best move" is genuinely strong. Difficulty is **not** a different, weaker
+model — it is a knob on how the engine *uses* the near-perfect answer:
+
+- The search scores **every** legal move and returns a ranked top-K of expected
+  values (`searchScored` → `{moves, values}`).
+- The difficulty layer then **deliberately picks a lower-ranked option** — a
+  move the model still believes has a real chance of winning, just not the
+  absolute best:
+  - **Hard** → near-greedy: picks the top-scored move.
+  - **Medium** → high temperature plus one "good-but-not-best" slip: samples
+    among the strong top moves.
+  - **Easy** → high temperature plus explicit blunders: frequently picks a
+    random/weak legal move (bounded), and plays defensively.
+
+So you never face a "dumber brain" — you face a nearly perfect brain that is
+**told to make a mistake** a tunable fraction of the time. The model itself
+stays optimal; only the **move selection after inference** is softened.
+
+### What is sent to the model
+
+Per position, the model only ever receives:
+
+| input | value |
+|-------|-------|
+| tokens | each cell `{0,1,2}`, normalized so the side-to-move is always `1` |
+| mask   | `1` on empty/legal cells, `0` on occupied |
+| n      | cube size |
+
+For a whole move, the native search additionally receives the raw board, the AI
+side, and the search parameters (`depth`, `topK`, `maxNodes`, `aggression`, `n`).
+
+### What is processed after inference
+
+```mermaid
+flowchart TD
+    subgraph SEND["Sent to the model (per position)"]
+        A["normalized tokens {0,1,2}"] --> F["transformer forward"]
+        B["legal-move mask"] --> F
+        C["n (cube size)"] --> F
+        F --> V["value logit"]
+        F --> PL["policy logits"]
+    end
+    subgraph POST["Processed after inference"]
+        V --> S1["sigmoid → win probability"]
+        PL --> S2["softmax / argmax → move ranking"]
+        S1 --> S["C++ expectimax search<br/>over your predicted replies, node budget, depth"]
+        S2 --> S
+        S --> TS["TS decision layer (difficulty)"]
+        TS --> W["forced win / block"]
+        TS --> D["deny your favourite cells (+DENY_WEIGHT × affinity)"]
+        TS --> K["pick from the inferred top-K:<br/>hard = best · medium/easy = a lower, still-winning option"]
+        W --> MOVE["chosen move applied to the board"]
+        D --> MOVE
+        K --> MOVE
+    end
+```
+
+- **C++ (inside the native call):** `sigmoid(value)` → win probability;
+  `softmax/argmax(policy)` → move ranking and the opponent's likely replies; the
+  expectimax search sums expected value over those replies within the node
+  budget.
+- **TS (after the native call):** forced win/block checks, the affinity **deny**
+  bias, the **defensive** bias (Easy), then the **difficulty selection** —
+  sampling a lower-ranked but viable move from the top-K — and applying the move
+  to the board.
 
 ---
 

@@ -140,12 +140,44 @@ The output is a compact binary (per record: `n³` cells + move + value +
 
 **Why we still need a model.** The solver is *exact*, but deciding one move
 means searching the whole remaining game tree, and it only exists as a Go/C++
-program we can't ship on a phone. And a lookup table is impossible because the
-position space is astronomically large: a 3×3×3 board alone has ~1.4 trillion
-reachable positions, so even a ~900k-sample set covers **far less than 0.01%**
-of it (4×4×4 is orders of magnitude larger). The transformer's job is to
-**generalise** the solver's policy to positions it never saw — 106k parameters
-standing in for a full-tree search.
+program we can't ship on a phone. And a lookup table is impossible, because the
+number of positions the game can be in — the "movements" — is astronomically
+large and explodes with board size:
+
+| board | cells | reachable positions |
+|-------|-------|---------------------|
+| 3×3×3 | 27 | ~1.4 × 10¹² (1,405,135,196,755) |
+| 4×4×4 | 64 | ~10³⁰ |
+| 5×5×5 | 125 | ~10⁵⁹ |
+| 6×6×6 | 216 | ~10¹⁰³ |
+
+Across the sizes the game offers that's **~10¹⁰³ positions — far more than the
+number of atoms in the observable universe (~10⁸⁰)**. Distilling even one
+position per reachable board state is impossible, let alone storing a move for
+each. The ~900k positions distilled from 100,000 solver games at 3×3×3 alone
+cover **0.000064% (about 1 in 1.56 million)** of that board.
+
+**What a lookup table would actually cost.** Say we store, per position, only
+the best move + a win probability (≈9 bytes/entry, keyed by the 2-bit-per-cell
+board):
+
+| board | positions | table size (≈) |
+|-------|-----------|----------------|
+| 3×3×3 | 1.4 × 10¹² | ~12–20 TB |
+| 4×4×4 | ~10³⁰ | ~10³¹ B — more storage than has ever been manufactured |
+| 5×5×5 | ~10⁵⁹ | ~10⁶⁰ B |
+| 6×6×6 | ~10¹⁰³ | ~10¹⁰⁴ B — more than the atoms in the universe |
+
+Even the *smallest* board's table is ~15 TB (a room full of hard drives, when
+the phone has a few GB) — and it only serves 3×3×3. Building it is equally
+hopeless: enumerating ~10³⁰ positions for 4×4×4 at an optimistic **one
+microsecond each** takes ~10¹⁶ years, a million times the age of the universe
+(each entry is a full-tree solver search, not a free record).
+
+The model replaces all of that with **106,690 parameters ≈ 0.43 MB** baked into
+the app binary — roughly **30-million times smaller than the 3×3×3 table
+alone**, and it plays every size at once. That is exactly why we train a model
+instead of shipping a table.
 
 ### Phase 2 — RL: self-play policy gradient
 

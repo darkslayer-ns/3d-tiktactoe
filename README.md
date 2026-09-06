@@ -109,6 +109,32 @@ distill -n 3 -games 100000 -workers 8 -explore 0.15 -out distill_data.bin
 | `-explore 0.15` | chance each move is a **random** move instead of the solver's best (15%), so games vary |
 | `-out file` | output binary path |
 
+**So was `-n 3` enough? No — and here's how one model plays every size.**
+
+`-n 3` only says "generate the solver's data for a 3×3×3 board"; you run
+`distill` once per size (`-n 4`, `-n 6`, …). Small boards matter because the
+solver is exact and cheap there, so the model learns the *shared geometry*
+(threats, forks, blocks) quickly — but a model trained only on 3×3×3 would
+think "3-in-a-row wins", which is nothing on a 6×6×6 board. The universal
+trainer therefore **mixes sizes every cycle** (`train_universal.py
+--sizes 3,4,6`), and the resulting single set of weights plays any size thanks
+to four things:
+
+- **Variable-length sequence.** The board is simply `n³` tokens, and
+  self-attention has no fixed input length — 27 tokens or 216 tokens flow
+  through the same weights.
+- **`n` is an input at forward time.** `model(x, mask, n=size)` tells the
+  network the current board size whenever it runs.
+- **Scale-free coordinates.** Each cell's `(x,y,z)` is divided by `n−1`, so
+  positions always live in `[0,1]` (`CoordMLP` in `dev/training/model.py`). A
+  cell "halfway to the opposite corner" is `0.5` whether the board is 3 or 6
+  wide — so the learned position embedding means the same thing at every size
+  and the geometry transfers.
+- **Seeing several sizes teaches the real rule.** Winning means "`n` cells in a
+  straight line along an axis or body diagonal". Only training on multiple
+  sizes makes the network learn that rule *parameterised by `n`*, instead of
+  memorising one board.
+
 The output is a compact binary (per record: `n³` cells + move + value +
 `game_id`); the `game_id` is how the trainer splits train/eval by whole games.
 

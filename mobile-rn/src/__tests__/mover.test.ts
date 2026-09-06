@@ -63,6 +63,52 @@ describe('LookaheadMover', () => {
     expect(b.cells[hint]).toBe(EMPTY)
   })
 
+  it('getHint prefers taking the win over answering a threat', async () => {
+    const b = new Board(3)
+    // P1 (human) can win now at (2,0,0)
+    b.apply(b.idx(0, 0, 0), P1)
+    b.apply(b.idx(1, 0, 0), P1)
+    // …while P2 also threatens a win at (0,2,0)
+    b.apply(b.idx(0, 2, 1), P2)
+    b.apply(b.idx(0, 2, 2), P2)
+    const engine = legalEngine()
+    const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
+    expect(await mover.getHint(P1)).toBe(b.idx(2, 0, 0))
+  })
+
+  it('getHint blocks the AI threat when there is exactly one', async () => {
+    const b = new Board(3)
+    // P2 threatens only along the x-row (0,0,0)->(1,0,0): (2,0,0) is the sole
+    // winning cell and must be answered.
+    b.apply(b.idx(0, 0, 0), P2)
+    b.apply(b.idx(1, 0, 0), P2)
+    b.apply(b.idx(0, 1, 2), P1)
+    b.apply(b.idx(1, 2, 1), P1)
+    const engine = legalEngine()
+    const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
+    expect(await mover.getHint(P1)).toBe(b.idx(2, 0, 0))
+  })
+
+  it('getHint on an unblockable AI fork still returns a legal move', async () => {
+    const b = new Board(3)
+    // P2 can win at (2,0,0) OR at (0,2,0) next move — two independent threats,
+    // so no single P1 move can save the position.
+    b.apply(b.idx(0, 0, 0), P2)
+    b.apply(b.idx(1, 0, 0), P2)
+    b.apply(b.idx(0, 2, 1), P2)
+    b.apply(b.idx(0, 2, 2), P2)
+    b.apply(b.idx(1, 1, 0), P1)
+    b.apply(b.idx(1, 0, 2), P1)
+    const engine = legalEngine()
+    const mover = new LookaheadMover(engine, b, new OpponentPredictor(b, engine), 'hard')
+    const hint = await mover.getHint(P1)
+    expect(hint).toBeGreaterThanOrEqual(0)
+    expect(b.cells[hint]).toBe(EMPTY)
+    // It must not pretend there is a win: the AI still has a one-move threat.
+    const w = b.winner()
+    expect(w.player).toBe(EMPTY)
+  })
+
   it('blocks an immediate loss', async () => {
     const b = new Board(3)
     b.apply(b.idx(0, 0, 0), P2)

@@ -29,8 +29,11 @@ export const DIFFICULTY_TEMPERATURE: Record<Difficulty, number> = {
   hard: 0.0,
 }
 
-/** Lookahead depth the Hint uses, independent of difficulty (strong hints). */
-export const HINT_DEPTH = 5
+/** Half-moves the Hint rolls each candidate forward (independent of difficulty). */
+export const HINT_PLIES = 8
+
+/** Max Hint candidates on huge boards (top by model policy). */
+export const HINT_MAX_CANDIDATES = 48
 
 /**
  * Denial weight: the AI prefers to occupy cells the player has overplayed
@@ -622,33 +625,122 @@ export class LookaheadMover {
     return best
   }
 
-  /** Best move for `side` on the live board, ignoring difficulty blunders and
-   *  randomness — this is what a HINT button should recommend. Does not mutate
-   *  the board. */
+  /** Empty cells where `side` would win by playing there right now (exact). */
+  private _winningCells(board: Board, side: Cell): number[] {
+    const n = board.n
+    const out: number[] = []
+    const seen = new Set<number>()
+    for (const line of board.lines) {
+      let owned = 0
+      let empty = -1
+      let open = 0
+      for (const c of line) {
+        const i = board.idx(c[0], c[1], c[2])
+        const v = board.cells[i]
+        if (v === side) owned += 1
+        else if (v === EMPTY) {
+          open += 1
+          empty = i
+        }
+      }
+      if (owned === n - 1 && open === 1 && !seen.has(empty)) {
+        seen.add(empty)
+        out.push(empty)
+      }
+    }
+    return out
+  }
+
+  /**
+   * Prefill + re-infer playout. Value (for `human`) of the position on `board`
+   * with `toMove` to play: exact tactics are forced at EVERY ply — the side to
+   * move takes a win, and answers a one-move threat — otherwise the model's own
+   * pick plays (the "where does the AI go next" inference). Recurses up to
+   * `pliesLeft` further half-moves, then falls back to the model's value.
+   */
+  private async _hintPlayout(board: Board, toMove: Cell, human: Cell, pliesLeft: number): Promise<number> {
+    const { player: winner } = board.winner()
+    if (winner !== EMPTY) return winner === human ? 1.0 : 0.0
+    if (board.emptyCount() === 0) return 0.5
+    const foe: Cell = toMove === P1 ? P2 : P1
+
+    // exact: the side to move wins now
+    if (this._winningCells(board, toMove).length > 0) return toMove === human ? 1.0 : 0.0
+
+    // exact: the side to move must answer its opponent's one-move threat
+    const threats = this._winningCells(board, foe)
+    if (threats.length === 1) {
+      board.apply(threats[0], toMove)
+      const v = await this._hintPlayout(board, foe, human, pliesLeft - 1)
+      board.cells[threats[0]] = EMPTY
+      return v
+    }
+    if (threats.length > 1) {
+      // two independent winning cells for the opponent: no single block saves
+      return toMove === human ? 0.0 : 1.0
+    }
+
+    if (pliesLeft <= 0) {
+      const [v] = this._forward(board, toMove)
+      return toMove === human ? v : 1 - v
+    }
+
+    // otherwise let the model pick for the side to move, then keep rolling
+    const g = this._greedy(board, toMove)
+    board.apply(g, toMove)
+    const v = await this._hintPlayout(board, foe, human, pliesLeft - 1)
+    board.cells[g] = EMPTY
+    return v
+  }
+
+  /** Best move for `side` on the live board — what the HINT recommends.
+   *  Ignores difficulty blunders and randomness. Order of preference:
+   *   1. win right now,
+   *   2. answer the AI's one-move threat (forced block),
+   *   3. otherwise prefill each candidate on a COPY and re-run inference to see
+   *      where the AI plays, rolling a few plies ahead — so a move that hands
+   *      the AI an attack/win next is never picked when a safer one exists.
+   *  Does not mutate the live board. */
   async getHint(side: Cell): Promise<number> {
     const moves = this.board.moves()
     if (moves.length === 0) return -1
-    const search = new Board(this.board.n, this.board.cells)
-    // immediate win
-    for (const m of moves) {
-      search.apply(m, side)
-      const { winner: w } = search.outcome()
-      search.cells[m] = EMPTY
-      if (w === side) return m
-    }
-    // immediate block: never let the AI win next move
     const opp: Cell = side === P1 ? P2 : P1
-    for (const m of moves) {
-      search.apply(m, opp)
-      const { winner: w } = search.outcome()
-      search.cells[m] = EMPTY
-      if (w === opp) return m
+
+    // 1) take the win
+    const winNow = this._winningCells(this.board, side)
+    if (winNow.length > 0) return winNow[0]
+
+    // 2) answer the AI's one-move threat (forced block)
+    const aiThreats = this._winningCells(this.board, opp)
+    if (aiThreats.length === 1) return aiThreats[0]
+
+    // 3) prefill + re-infer rollout. On huge boards only the top candidates
+    //    (by the model's own policy) are rolled out.
+    let cands = moves
+    const [, rootPolicy] = this._forward(this.board, side)
+    if (cands.length > HINT_MAX_CANDIDATES) {
+      cands = cands
+        .slice()
+        .sort((a, b) => rootPolicy[b] - rootPolicy[a])
+        .slice(0, HINT_MAX_CANDIDATES)
     }
-    // Deep lookahead regardless of difficulty (HINT_DEPTH plies), so the hint
-    // is strong even on Easy/Medium — it avoids moves the AI can punish.
-    this._nodes = 0
-    const scored = (await this._scored(side, moves, search, HINT_DEPTH)).sort((a, b) => b[1] - a[1])
-    return scored.length > 0 ? scored[0][0] : -1
+
+    const plies = Math.max(4, HINT_PLIES - Math.max(0, this.board.n - 3))
+    let best = cands[0]
+    let bestV = -1
+    for (const m of cands) {
+      await this._maybeYield()
+      this.board.apply(m, side)
+      const v = await this._hintPlayout(this.board, opp, side, plies - 1)
+      this.board.cells[m] = EMPTY
+      const better = v > bestV + 1e-9
+      const tie = Math.abs(v - bestV) <= 1e-9 && (bestV < 0 || rootPolicy[m] > rootPolicy[best])
+      if (better || tie) {
+        best = m
+        bestV = v
+      }
+    }
+    return best
   }
 
   private _recordDecision(

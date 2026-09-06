@@ -21,7 +21,8 @@
  *  - a yellow box marks the pending (selected) cell; white pulses last AI move
  *
  * Subtle polish (opt-in via props, always on here):
- *  - marks gently turn ~60% toward the camera so they stay readable
+ *  - marks billboard to face the camera, so the flat X/O cards read face-on
+ *    from any orbit angle
  *  - an additive "halo" copy gives marks a soft rim/glow; idle color pulse
  *
  * Win/lose is a Blender-rendered trophy image shown by the GameOverOverlay.
@@ -40,9 +41,6 @@ const EXPLODE = 0.4
 
 /** Side length of each cell's invisible hit box. */
 const HIT_SIZE = 0.918
-
-/** How far marks turn to face the camera (0 = flat board plane, 1 = full billboard). */
-const BILLBOARD = 0.6
 
 /** Camera orbit limits (web OrbitControls used 3..14). */
 const MIN_DISTANCE = 4
@@ -277,14 +275,10 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
   const m = useMemo(() => new THREE.Matrix4(), [])
   const q = useMemo(() => new THREE.Quaternion(), [])
   const v = useMemo(() => new THREE.Vector3(), [])
+  const dir = useMemo(() => new THREE.Vector3(), [])
   const s = useMemo(() => new THREE.Vector3(), [])
   const c = useMemo(() => new THREE.Color(), [])
-  const up = useMemo(() => new THREE.Vector3(0, 1, 0), [])
-
-  // Wrap-free camera yaw (accumulated), so the marks' partial billboard never
-  // snaps when the orbit crosses the ±180° boundary.
-  const lastCamYaw = useRef<number | null>(null)
-  const continuousYaw = useRef(0)
+  const zAxis = useMemo(() => new THREE.Vector3(0, 0, 1), [])
 
   const cSlot = useMemo(() => new THREE.Color('#0284c7'), [])
   const cSlotDim = useMemo(() => new THREE.Color('#0c4a6e'), [])
@@ -319,19 +313,6 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
       }
     }
     lastNow.current = now
-
-    // Smooth, wrap-free yaw for the marks' partial billboard.
-    const rawYaw = Math.atan2(camPos.x, camPos.z)
-    if (lastCamYaw.current == null) {
-      lastCamYaw.current = rawYaw
-    } else {
-      let d = rawYaw - lastCamYaw.current
-      if (d > Math.PI) d -= 2 * Math.PI
-      if (d < -Math.PI) d += 2 * Math.PI
-      continuousYaw.current += d
-      lastCamYaw.current = rawYaw
-    }
-    q.setFromAxisAngle(up, continuousYaw.current * BILLBOARD)
 
     const focusing = pending >= 0 && pending < count && cells[pending] === 0
     let ppx = -1
@@ -403,7 +384,10 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
         const t = bt >= 0 ? Math.min(1, (now - bt) / 0.42) : 1
         const sc = t >= 1 ? 1 : Math.max(0.001, easeOutBack(t))
 
-        // partial billboard: `q` is the shared wrap-free yaw computed above
+        // billboard: point the mark's flat front (+Z) at the camera so the
+        // X/O card reads face-on from any orbit angle
+        dir.set(camPos.x - px, camPos.y - py, camPos.z - pz).normalize()
+        q.setFromUnitVectors(zAxis, dir)
 
         m.compose(v.set(px, py, pz), q, s.set(sc, sc, sc))
         mark.setMatrixAt(i, m)

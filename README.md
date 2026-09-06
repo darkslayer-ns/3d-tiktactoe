@@ -16,11 +16,11 @@ Python backend is compiled into the app and called through JSI.
 
 ```mermaid
 flowchart TD
-    TR["TRAINING (offline, Python/PyTorch)<br/>Phase 1: supervised distillation (imitate the alpha-beta solver)<br/>Phase 2: RL self-play (policy gradient)<br/>Phase 3: difficulty calibration<br/>→ PyTorch checkpoint (.pt)"]
-    TR -->|"cpp/tools/export_weights.py"| BIN["TFM1 binary (cpp/model.bin)<br/>+ embed_weights.py → C array → tfm_model_data.h (in-app)"]
-    BIN -->|"C++ port (byte-for-byte parity)"| FWD["tfm::Model::forward(n)<br/>→ value logit + policy logits"]
-    BS["BoardState (n×n×n)"] -->|"board → tokens (normalize + mask)"| FWD
-    FWD -->|"JSI / TurboModule"| MVR["LookaheadMover (TS)<br/>shallow search + difficulty knobs over the SAME weights"]
+    TR["TRAINING (offline, PyTorch)<br/>Phase 1: supervised distillation<br/>Phase 2: RL self-play<br/>Phase 3: difficulty calibration<br/>→ checkpoint (.pt)"]
+    TR -->|"export_weights.py"| BIN["TFM1 binary (cpp/model.bin)<br/>+ embed_weights.py → C array (in-app)"]
+    BIN -->|"C++ port (byte-for-byte parity)"| FWD["tfm::Model::forward(n)<br/>→ value + policy logits"]
+    BS["BoardState (n×n×n)"] -->|"tokens (normalize + mask)"| FWD
+    FWD -->|"JSI / TurboModule"| MVR["LookaheadMover (TS)<br/>search + difficulty knobs"]
     MVR --> CH["chosen move"]
 ```
 
@@ -73,6 +73,33 @@ solver's best move, `L_value` = binary cross-entropy against the game outcome.
 Train/eval are split by **whole games**, so eval positions never leak from
 training games. It gives the network a strong policy/value baseline quickly.
 
+#### Generating the training set with a Go solver
+
+`backend/distill` is a small **Go** program that turns the alpha-beta solver
+into a labelled dataset:
+
+- It plays **full games** where the solver picks every move (with a 15%
+  random-exploration chance so games vary): `distill -n 3 -games 100000`.
+- **Every position visited** in a game is recorded as one sample — the board
+  cells, the solver's **best move**, and the **game value** from the
+  side-to-move's perspective — so one game yields ~n² labelled positions, not
+  one.
+- It is **parallelised** across all CPU cores, and each worker reuses a single
+  `Solver` whose transposition table stays warm across positions and games — a
+  big speedup for a full-tree search.
+
+The output is a compact binary (per record: `n³` cells + move + value +
+`game_id`); the `game_id` is how the trainer splits train/eval by whole games.
+
+**Why we still need a model.** The solver is *exact*, but deciding one move
+means searching the whole remaining game tree, and it only exists as a Go/C++
+program we can't ship on a phone. And a lookup table is impossible because the
+position space is astronomically large: a 3×3×3 board alone has ~1.4 trillion
+reachable positions, so even a ~900k-sample set covers **far less than 0.01%**
+of it (4×4×4 is orders of magnitude larger). The transformer's job is to
+**generalise** the solver's policy to positions it never saw — 106k parameters
+standing in for a full-tree search.
+
 ### Phase 2 — RL: self-play policy gradient
 
 Then the network improves by **playing itself**. At every position it samples
@@ -82,12 +109,12 @@ position it visited:
 
 ```mermaid
 flowchart TD
-    N["network (policy)"] -->|"sample move (temperature exploration)"| G["self-play game"]
+    N["network (policy)"] -->|"sample move (temperature)"| G["self-play game"]
     G -->|"win / loss"| OUT["outcome"]
-    OUT -->|"value target"| STORE["store every position with its game outcome"]
+    OUT -->|"value target"| STORE["store every position with its outcome"]
     STORE --> N
-    STORE --> VH["value head learns: was this position winning?"]
-    STORE --> PH["policy head learns: what did the winner play?"]
+    STORE --> VH["value head learns the outcome"]
+    STORE --> PH["policy head learns the winning move"]
 ```
 
 Because a better network generates better games next round, this is the
@@ -176,10 +203,10 @@ to `[0, 1]` and pushed through a small MLP:
 
 ```mermaid
 flowchart LR
-    CI["coord_i = (x/(n-1), y/(n-1), z/(n-1)) · 3 inputs"] --> L1["Linear(3→32) → ReLU"]
-    L1 --> L2["Linear(32→64) · d_model outputs"]
+    CI["coord_i = (x,y,z) normalized (3 inputs)"] --> L1["Linear(3→32) → ReLU"]
+    L1 --> L2["Linear(32→64)"]
     L2 --> PI["pos_i"]
-    CE["cell_embed(token_i)"] --> SUM["input_i = cell_embed(token_i) + pos_i"]
+    CE["cell_embed(token_i)"] --> SUM["input_i = cell_embed + pos_i"]
     PI --> SUM
 ```
 
@@ -233,10 +260,10 @@ diagonally through 3D space** (self-attention has no locality bias).
 
 ```mermaid
 flowchart TD
-    X["x (N × 64)"] --> ATT["Multi-Head Self-Attention (8 heads, 64-dim, d_FF = 256)"]
+    X["x (N × 64)"] --> ATT["Multi-Head Self-Attention (8 heads)"]
     ATT --> R1["+ (residual)"]
     R1 --> LN1["LayerNorm"]
-    LN1 --> FF["Feed-Forward: Linear(64→256) → GELU → Linear(256→64)"]
+    LN1 --> FF["Feed-Forward (64→256→64, GELU)"]
     FF --> R2["+ (residual)"]
     R2 --> LN2["LayerNorm"]
     LN2 --> H["value head / policy head"]
@@ -299,7 +326,7 @@ best move = argmax over legal cells
 
 ```mermaid
 flowchart LR
-    X["x (N×64)"] --> M["mean → MLP → value logit → sigmoid → win prob"]
+    X["x (N×64)"] --> M["mean → MLP → value → sigmoid → win prob"]
     X --> P["Linear(64→1) per cell → logits"]
     P --> MS["mask(−∞ on occupied) → softmax → policy"]
 ```
@@ -317,14 +344,15 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    B["board (n³ cells) → [0,2,0,1,…]"] --> CE["cell_embed(token)"]
+    B["board (n³ cells)"] --> CE["cell_embed(token)"]
     CO["coord_mlp(xyz)"] --> X["x (n³×64)"]
     CE --> X
     X --> TE["2 × TransformerEncoder"]
     TE --> MN["mean → value logit"]
     TE --> PC["per-cell → logits"]
     MN --> SG["sigmoid → P(win) → {value: 0.63}"]
-    M["mask (n³) → [1,0,1,0,…]"] --> MS["mask logits(−∞) → softmax → policy over legal moves → {policy: [0.001, 0.02, …]}"]
+    M["mask (n³)"] --> MS["mask logits(−∞) → softmax<br/>→ policy over legal moves → {policy: […]}"]
+
     PC --> MS
     SG --> RT["returned to the mover"]
     MS --> RT
@@ -347,10 +375,10 @@ and is checked byte-for-byte against the reference graph by a parity test
 
 ```mermaid
 flowchart TD
-    PT["PyTorch model (.pt)"] -->|"cpp/tools/export_weights.py"| TFM["TFM1 binary (self-describing) → cpp/model.bin"]
-    TFM -->|"mobile-rn/scripts/embed_weights.py"| H["tfm_model_data.h (const unsigned char kModelBin[])"]
-    H -->|"compiled into the app"| CPP["mobile-rn/native/cpp/TfmEngine.cpp (tfm::Model, layers, ops)"]
-    CPP --> JSI["JS ⇄ C++ via JSI host functions: load() / evalPosition(board, mask, n) / numel()"]
+    PT["PyTorch model (.pt)"] -->|"export_weights.py"| TFM["TFM1 binary → cpp/model.bin"]
+    TFM -->|"embed_weights.py"| H["tfm_model_data.h (C array)"]
+    H -->|"compiled into the app"| CPP["TfmEngine.cpp (tfm::Model, layers, ops)"]
+    CPP --> JSI["JS ⇄ C++ via JSI<br/>load() / evalPosition(board, mask, n) / numel()"]
 ```
 
 The weights ship **inside the app binary** — no filesystem I/O, no network,
@@ -379,8 +407,8 @@ The raw network is combined with a shallow lookahead to decide moves:
 flowchart TD
     EV["evalPosition(board, side)"] --> CM["LookaheadMover.chooseMove(side)"]
     CM --> W["immediate win / block checks"]
-    W --> SC["score every legal move by depth-limited expected-value search<br/>(uses OpponentPredictor — the net's own policy head — to model the opponent's replies)"]
-    SC --> PK["final pick from the top-scored moves, temperature-tempered"]
+    W --> SC["score every legal move via<br/>depth-limited expected-value search<br/>(net's policy head models your replies)"]
+    SC --> PK["final pick from top-scored moves, temperature-tempered"]
 ```
 
 **Difficulty is not a different model** — it's runtime search parameters over
@@ -404,16 +432,16 @@ flowchart TD
     A["You play a move — cell i"] --> B["affinity[you][i] += 1"]
     B --> C["Game ends"]
     C --> R{"Result?"}
-    R -->|"You win"| W["Your played cells × 1.25 (WIN_BOOST — AI learns what beat it)"]
-    R -->|"You lose"| L["Your played cells × 0.5 (LOSS_DECAY — those moves are punished)"]
+    R -->|"You win"| W["Your cells × 1.25 (WIN_BOOST)<br/>AI learns what beat it"]
+    R -->|"You lose"| L["Your cells × 0.5 (LOSS_DECAY)<br/>those moves are punished"]
     R -->|"Draw"| N["No change"]
-    W --> P["Saved to on-device storage (AsyncStorage)"]
+    W --> P["Saved to storage (AsyncStorage)"]
     L --> P
     N --> P
     P --> F["Next game: all weights × 0.9 (recency fade)"]
     F --> S{"AI's move search"}
-    S --> D1["Deny: +DENY_WEIGHT × affinity on cells you overplay"]
-    S --> D2["Predict: policy-head replies × your attacker/defender profile"]
+    S --> D1["Deny: +DENY_WEIGHT × affinity<br/>on cells you overplay"]
+    S --> D2["Predict replies: policy head ×<br/>your attacker/defender profile"]
 ```
 
 - **Recorded live** — every move you make increments that cell's affinity for
@@ -526,7 +554,7 @@ flowchart TD
         S --> TS["TS decision layer (difficulty)"]
         TS --> W["forced win / block"]
         TS --> D["deny your favourite cells (+DENY_WEIGHT × affinity)"]
-        TS --> K["pick from the inferred top-K:<br/>hard = best · medium/easy = a lower, still-winning option"]
+        TS --> K["pick a lower, still-winning option<br/>from the inferred top-K (difficulty)"]
         W --> MOVE["chosen move applied to the board"]
         D --> MOVE
         K --> MOVE

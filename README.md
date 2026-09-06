@@ -16,7 +16,7 @@ Python backend is compiled into the app and called through JSI.
 
 ```mermaid
 flowchart TD
-    TR["TRAINING (offline, PyTorch)<br/>Phase 1: supervised distillation<br/>Phase 2: RL self-play<br/>Phase 3: difficulty calibration<br/>→ checkpoint (.pt)"]
+    TR["TRAINING (offline, PyTorch)<br/>Phase 1: supervised distillation<br/>Phase 2: RL self-play<br/>→ checkpoint (.pt)"]
     TR -->|"export_weights.py"| BIN["TFM1 binary (cpp/model.bin)<br/>+ embed_weights.py → C array (in-app)"]
     BIN -->|"C++ port (byte-for-byte parity)"| FWD["tfm::Model::forward(n)<br/>→ value + policy logits"]
     BS["BoardState (n×n×n)"] -->|"tokens (normalize + mask)"| FWD
@@ -102,6 +102,14 @@ standing in for a full-tree search.
 
 ### Phase 2 — RL: self-play policy gradient
 
+Phase 1 gives the model **general knowledge** — it copies the solver's *move
+choices* on the positions the solver happened to visit. But book knowledge is
+not **experience**: the model has never felt the consequences of its own play,
+and it can never be better than its teacher. That is what RL adds — the network
+plays thousands of games against itself and each win/loss becomes feedback it
+can learn from, the way a player who reads theory then plays real games turns
+what they read into actual skill.
+
 Then the network improves by **playing itself**. At every position it samples
 a move from its **own** softmax policy (a `temperature` controls exploration),
 plays a full game, and the game's outcome becomes the value target for every
@@ -122,11 +130,12 @@ classic **policy-gradient / self-play** loop
 (`training/train_universal.py` — one size-agnostic model trained on a mix of
 3×3×3, 4×4×4 and 6×6×6 games, so a 6×6-trained model transfers to 3×3).
 
-### Phase 3 — Difficulty calibration
+### Difficulty is hand-tuned, not a separate training phase
 
-`retrain_selfplay.py` calibrates each difficulty's runtime knobs (mistake
-rate, temperature, lookahead depth) against the **real on-device mover**, so a
-casual human wins roughly the intended share per level.
+Easy / Medium / Hard are **not trained**. The app ships ONE universal model;
+difficulty is a hand-tuned table of runtime knobs — search depth, move
+temperature, blunder budget/rate — in `mobile-rn/src/ai/mover.ts`
+(`DIFFICULTY`).
 
 The training code lives in `dev/training/` and `dev/scripts/` (see
 [Repo map](#repo-map)).
@@ -136,9 +145,10 @@ The training code lives in `dev/training/` and `dev/scripts/` (see
 > for millions of positions, and the brain copies it until it's competent
 > (Phase 1, supervised). Then you *practice alone*: the brain plays thousands of
 > games against itself; whenever it wins, it slightly reinforces the moves that
-> led to the win, and whenever it loses, it weakens them (Phase 2, RL). Finally
-> we tune how often the brain "accidentally" plays a bad move so the game has an
-> Easy / Medium / Hard setting (Phase 3, calibration).
+> led to the win, and whenever it loses, it weakens them (Phase 2, RL). The
+> Easy / Medium / Hard settings aren't trained at all — they're just runtime
+> knobs that tell the finished brain how often to play a deliberately weaker
+> move.
 
 ---
 
@@ -581,7 +591,7 @@ Quick orientation — the shipping app is `mobile-rn/`, the shared engine is
   APK, tests
 - [mobile-rn/native/README.md](mobile-rn/native/README.md) — the C++ JSI
   engine + iOS/Android build wiring
-- `dev/scripts/`, `dev/training/` — training, export and calibration scripts
+- `dev/scripts/`, `dev/training/` — training and export scripts
 - `dev/frontend/` — the web frontend (Vite/React)
 
 ### 0. One-time setup
@@ -690,7 +700,7 @@ dev/                       everything else: training, backend, web, tooling
 dev/
   backend/                 game rules, ML agent wiring, server, alpha-beta distill
   training/                PyTorch training: model.py, selfplay, trainers
-  scripts/                 training/export/calibration scripts
+  scripts/                 training and export scripts
   frontend/                web frontend (Vite/React)
   model_universal.pt       trained checkpoint
 ```

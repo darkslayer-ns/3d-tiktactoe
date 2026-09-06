@@ -36,7 +36,7 @@ def parse_args():
     p.add_argument("--temp", type=float, default=0.5)
     p.add_argument("--epochs", type=int, default=1, help="self-play+train cycles")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--save", type=str, default="mobile/assets/model_universal.pt")
+    p.add_argument("--save", type=str, default="dev/model_universal.pt")
     return p.parse_args()
 
 

@@ -12,8 +12,6 @@ cpp/fixtures/
 # generated native projects (regenerate via `expo prebuild`)
 mobile-rn/android/
 mobile-rn/ios/
-mobile/ios/
-mobile/android/
 
 # runtime data
 .cache/
@@ -41,4 +39,3 @@ model_universal/
 # compiled build artifacts
 backend/distill/distill
 backend/distill/libsolver.so
-mobile/assets/

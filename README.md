@@ -443,9 +443,47 @@ the SAME weights (`mobile-rn/src/ai/mover.ts:DIFFICULTY`):
 | move randomness | high (temp 1.1) | medium (temp 0.5) | near-greedy (temp 0.1) |
 | extra | defensive bias; adapts to the player's results | — | — |
 
-The `OpponentPredictor` additionally keeps a persistent, decaying affinity map
-of the moves *you* play (boosted when you win) so the AI gradually learns your
-tendencies across sessions — heuristic, on-device, no weight updates.
+### It learns your habits (opponent memory)
+
+On top of the fixed transformer weights, the app keeps a small, persistent
+**opponent memory** — a per-side map of *which cells you like to play*,
+maintained entirely on-device (pure bookkeeping, no weight updates):
+
+```
+ you play cell i   ──►  affinity[you][i] += 1      (recorded live, each move)
+ you WIN a game    ──►  your played cells × 1.25   (the AI learns what beat it)
+ you LOSE a game   ──►  your played cells × 0.5    (those moves are punished)
+ each new game     ──►  all weights × 0.9          (recency fade)
+```
+
+- **Recorded live** — every move you make increments that cell's affinity for
+  your side (`OpponentPredictor.record`).
+- **Rewarded / punished after every game** — win → your played cells are boosted
+  1.25× (`WIN_BOOST`); lose → they are decayed 0.5× (`LOSS_DECAY`); a draw
+  leaves them unchanged (`opponentMemory.applyResult`).
+- **Decayed per game** (× 0.9) so recent sessions count more than old ones.
+- **Persisted to on-device storage**, so the memory survives app restarts
+  (`opponentStorage.ts`).
+
+The search then uses this memory two ways while playing against you
+(`LookaheadMover._strongMove`, `src/ai/mover.ts`):
+
+1. **Denying your favourite cells.** Every move you've overplayed gets a
+   "deny" bonus (`DENY_WEIGHT × affinity[you][cell]`) added to the AI's own
+   move scores, so the AI prefers to take those cells itself instead of leaving
+   them open — the more you play a square, the more the AI snatches it.
+2. **Predicting your replies.** During its lookahead the AI models where you're
+   likely to move next using the network's policy head
+   (`OpponentPredictor.likelyMoves`), re-weighted by your **style profile**
+   (attacker vs. defender — how often you build threats vs. block), so it
+   spends its search budget on the replies you're most likely to make.
+
+The affinity-blended move prediction (`predictDistribution`) is also exposed
+for the internal model-knowledge panel, but the live engine leans on the
+deny-bias + policy-head prediction. Files: `src/ai/predictor.ts` (in-game
+prediction), `src/ai/opponentMemory.ts` (cross-game learning),
+`src/ai/opponentStorage.ts` (persistence).
+
 Difficulty also adapts to your recent results (win too much → it hardens; lose
 too much → it eases up).
 

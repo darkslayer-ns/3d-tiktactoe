@@ -32,6 +32,10 @@ if [ -z "${ANDROID_HOME:-}" ]; then
 fi
 export PATH="$ANDROID_HOME/build-tools/36.0.0:$PATH"
 
+# Local build secrets (gitignored): KEY_STORE_PASS / KEY_PASS.
+SECRETS="$ROOT/mobile-rn/scripts/build-secrets.env"
+[ -f "$SECRETS" ] && source "$SECRETS" || true
+
 cd "$ANDROID_DIR"
 
 echo "== gradlew: assemble$VARIANT (arch=${ARCH:-all}) =="
@@ -44,9 +48,13 @@ mkdir -p "$OUT_DIR"
 
 if [ "$VARIANT" = "release" ]; then
   if [ -f release.keystore ]; then
+    if [ -z "${KEY_STORE_PASS:-}" ] || [ -z "${KEY_PASS:-}" ]; then
+      echo "ERROR: KEY_STORE_PASS / KEY_PASS not set (see mobile-rn/scripts/build-secrets.env)." >&2
+      exit 1
+    fi
     echo "== zipalign + sign =="
     zipalign -f 4 "$APK" "$OUT_DIR/.aligned.apk"
-    apksigner sign --ks release.keystore --ks-pass pass:<redacted> --key-pass pass:<redacted> \
+    apksigner sign --ks release.keystore --ks-pass "pass:$KEY_STORE_PASS" --key-pass "pass:$KEY_PASS" \
       --out "$OUT_DIR/neoncube-${LABEL}-release.apk" "$OUT_DIR/.aligned.apk"
     apksigner verify "$OUT_DIR/neoncube-${LABEL}-release.apk"
     rm -f "$OUT_DIR/.aligned.apk"

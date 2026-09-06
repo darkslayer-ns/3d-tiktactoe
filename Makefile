@@ -10,6 +10,10 @@
 #   make mobile-prebuild   mobile-rn: generate android/ ios/ via expo prebuild
 #   make apk               build a release APK (needs Android SDK/NDK + JDK 17)
 #   make android-debug     build+install debug build on a connected device
+#   make ios-internal / ios-release          iOS Release build (device); -internal enables the AI debug toggle
+#   make ios-internal-ipa / ios-release-ipa  iOS archive + App Store IPA (distribution)
+#   make android-internal / android-release  signed Android release APK (-internal enables the AI debug toggle)
+#   make internal / release                  build both platforms (internal / public)
 #   make test         backend pytest + mobile jest + C++ parity
 #   make run-backend  dev server on :8100
 #   make run-frontend dev server on :5173
@@ -18,6 +22,10 @@
 SHELL := /bin/bash
 ROOT  := $(CURDIR)
 NCPU  := $(shell nproc 2>/dev/null || echo 4)
+
+# Local build secrets (gitignored): IOS_TEAM, KEY_STORE_PASS, KEY_PASS. Values
+# use `?=` so a shell-env override wins. See mobile-rn/scripts/build-secrets.env.
+-include $(ROOT)/mobile-rn/scripts/build-secrets.env
 
 MODEL_PT  := $(ROOT)/dev/model_universal.pt
 MODEL_BIN := $(ROOT)/cpp/model.bin
@@ -28,6 +36,8 @@ CPP_HDRS  := $(wildcard cpp/include/tfm/*.hpp)
 .PHONY: all help cpp parity model embed fixtures \
         frontend mobile mobile-typecheck mobile-test mobile-prebuild \
         apk android-debug \
+        ios-internal ios-release ios-internal-ipa ios-release-ipa \
+        android-internal android-release internal release \
         backend-test test run-backend run-frontend clean
 
 all: cpp frontend mobile-typecheck mobile-test backend-test
@@ -115,6 +125,85 @@ apk: mobile-prebuild embed
 # Debug build + install on a connected device/emulator (adb)
 android-debug: mobile-prebuild embed
 	cd mobile-rn && npx expo run:android
+
+# ---------------------------------------------------------------------------
+# Release builds (embedded JS bundle — no Metro / dev server)
+# ---------------------------------------------------------------------------
+#   ios-internal / ios-release        iOS .app (Release) for a connected device
+#   ios-internal-ipa / ios-release-ipa  iOS archive + App Store IPA (distribution)
+#   android-internal / android-release  signed Android release APK
+#   internal / release                build both platforms
+#
+# "Internal" builds bake EXPO_PUBLIC_INTERNAL_DEBUG=1 so the AI debug toggle /
+# model-knowledge panel are included; public release builds compile them out.
+# Both are Release configs (embedded bundle, no Metro).
+#
+# Prereqs (one-time):
+#   - run `npx expo prebuild` + `cd ios && pod install` once (never auto-run
+#     here: prebuild wipes android/release.keystore)
+#   - mobile-rn/android/release.keystore must exist (build_apk.sh signs with it)
+#   - iOS: a device must be connected (or set IOS_UDID=<udid>)
+#   - Android: ANDROID_HOME / JAVA_HOME set (build_apk.sh sources ~/.android-env.sh)
+
+IOS_UDID ?= $(shell xcrun xctrace list devices 2>/dev/null | grep -Eo '00008140-[0-9A-F]{16}' | head -1)
+IOS_DD   ?= /tmp/isocube-build
+
+define build-ios
+	@if [ -z "$(IOS_TEAM)" ]; then \
+	  echo "IOS_TEAM unset — put it in mobile-rn/scripts/build-secrets.env"; exit 1; fi
+	@if [ -z "$(IOS_UDID)" ]; then \
+	  echo "No iOS device found. Connect one, or set IOS_UDID=..."; exit 1; fi
+	cd mobile-rn && EXPO_PUBLIC_INTERNAL_DEBUG=$(1) xcodebuild \
+		-workspace ios/ISOCUBE.xcworkspace -scheme ISOCUBE \
+		-configuration Release -destination 'id=$(IOS_UDID)' \
+		-derivedDataPath '$(IOS_DD)' \
+		-allowProvisioningUpdates -allowProvisioningDeviceRegistration \
+		build DEVELOPMENT_TEAM=$(IOS_TEAM) CODE_SIGN_STYLE=Automatic
+endef
+
+define archive-ios
+	@if [ -z "$(IOS_TEAM)" ]; then \
+	  echo "IOS_TEAM unset — put it in mobile-rn/scripts/build-secrets.env"; exit 1; fi
+	@bash mobile-rn/scripts/make_export_plist.sh /tmp/ISOCUBE-$(2)-export.plist
+	cd mobile-rn && EXPO_PUBLIC_INTERNAL_DEBUG=$(1) xcodebuild \
+		-workspace ios/ISOCUBE.xcworkspace -scheme ISOCUBE \
+		-configuration Release -destination 'generic/platform=iOS' \
+		-archivePath '/tmp/ISOCUBE-$(2).xcarchive' \
+		-allowProvisioningUpdates \
+		archive DEVELOPMENT_TEAM=$(IOS_TEAM) CODE_SIGN_STYLE=Automatic
+	xcodebuild -exportArchive \
+		-archivePath '/tmp/ISOCUBE-$(2).xcarchive' \
+		-exportPath '/tmp/ISOCUBE-$(2)-export' \
+		-exportOptionsPlist '/tmp/ISOCUBE-$(2)-export.plist' \
+		-allowProvisioningUpdates
+	@echo "IPA: /tmp/ISOCUBE-$(2)-export/ISOCUBE.ipa"
+endef
+
+ios-internal:
+	$(call build-ios,1)
+
+ios-release:
+	$(call build-ios,)
+
+ios-internal-ipa:
+	$(call archive-ios,1,internal)
+
+ios-release-ipa:
+	$(call archive-ios,,release)
+
+android-internal:
+	cd mobile-rn && EXPO_PUBLIC_INTERNAL_DEBUG=1 bash scripts/build_apk.sh --release
+
+android-release:
+	cd mobile-rn && bash scripts/build_apk.sh --release
+
+internal: ios-internal android-internal
+	@echo
+	@echo "== internal builds done =="
+
+release: ios-release android-release
+	@echo
+	@echo "== release builds done =="
 
 # ---------------------------------------------------------------------------
 # Tests

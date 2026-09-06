@@ -51,8 +51,7 @@
     "ios": {
       "bundleIdentifier": "com.neoncube.ttt",
       "supportsTablet": true,
-      "buildNumber": "13",
-      "developmentTeam": "<team-id>"
+      "buildNumber": "13"
     }
   }
 }

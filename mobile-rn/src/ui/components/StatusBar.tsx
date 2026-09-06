@@ -12,7 +12,6 @@ interface StatusBarProps {
   state: GameState
   humanSide: Cell
   onPlayAgain: () => void
-  onNewGame?: () => void
   onHint?: () => void
   onUndo?: () => void
 }
@@ -25,7 +24,6 @@ export function StatusBar({
   state,
   humanSide,
   onPlayAgain,
-  onNewGame,
   onHint,
   onUndo,
 }: StatusBarProps) {
@@ -83,11 +81,6 @@ export function StatusBar({
         {!state.thinking && onUndo != null && (
           <Pressable onPress={onUndo} style={styles.newGame}>
             <Text style={styles.newGameText}>Undo</Text>
-          </Pressable>
-        )}
-        {onNewGame != null && (
-          <Pressable onPress={onNewGame} style={styles.newGame}>
-            <Text style={styles.newGameText}>New game</Text>
           </Pressable>
         )}
       </View>

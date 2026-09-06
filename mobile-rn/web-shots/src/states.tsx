@@ -86,21 +86,21 @@ const states: Record<string, React.ReactNode> = {
   'your-turn': (
     <View style={styles.root}>
       <Board cells={midCells} />
-      <StatusBar state={makeState({ currentPlayer: P1 })} humanSide={P1} onPlayAgain={noop} onNewGame={noop} onHint={noop} onUndo={noop} />
+      <StatusBar state={makeState({ currentPlayer: P1 })} humanSide={P1} onPlayAgain={noop} onHint={noop} onUndo={noop} />
     </View>
   ),
 
   opponent: (
     <View style={styles.root}>
       <Board cells={midCells} />
-      <StatusBar state={makeState({ currentPlayer: P2 })} humanSide={P1} onPlayAgain={noop} onNewGame={noop} onUndo={noop} />
+      <StatusBar state={makeState({ currentPlayer: P2 })} humanSide={P1} onPlayAgain={noop} onUndo={noop} />
     </View>
   ),
 
   hint: (
     <View style={styles.root}>
       <Board cells={midCells} hint={13} />
-      <StatusBar state={makeState({ currentPlayer: P1 })} humanSide={P1} onPlayAgain={noop} onNewGame={noop} onHint={noop} onUndo={noop} />
+      <StatusBar state={makeState({ currentPlayer: P1 })} humanSide={P1} onPlayAgain={noop} onHint={noop} onUndo={noop} />
     </View>
   ),
 

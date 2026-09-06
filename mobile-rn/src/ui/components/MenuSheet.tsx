@@ -14,6 +14,7 @@ import {
   Text,
   View,
 } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Theme, fontSize, radius, spacing } from '../theme'
 import type { Difficulty, GameConfig } from '../../ai/types'
 import type { Cell } from '../../game/types'
@@ -162,6 +163,7 @@ function SizeSlider({
 }
 
 export function MenuSheet({ visible, onStart, onHowTo }: MenuSheetProps) {
+  const insets = useSafeAreaInsets()
   const [humanSide, setHumanSide] = useState<Cell>(1)
   const [difficulty, setDifficulty] = useState<Difficulty>('hard')
   const [size, setSize] = useState(3)
@@ -184,7 +186,7 @@ export function MenuSheet({ visible, onStart, onHowTo }: MenuSheetProps) {
     <Modal visible={visible} transparent animationType="none" onRequestClose={() => {}}>
       <View style={styles.backdrop}>
         <Animated.View
-          style={[styles.sheet, { transform: [{ translateY }] }]}
+          style={[styles.sheet, { paddingBottom: spacing(8) + insets.bottom, transform: [{ translateY }] }]}
         >
           <View style={styles.handle} />
 

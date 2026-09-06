@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Theme, fontSize, radius, spacing } from '../theme'
 import { Board3D, axisCross } from '../components/Board3D'
 import { MenuSheet } from '../components/MenuSheet'
@@ -39,6 +40,7 @@ const ENGINE_UNAVAILABLE_MSG =
   'Model engine not available — build with expo run:android/ios'
 
 export function GameScreen() {
+  const insets = useSafeAreaInsets()
   const [config, setConfig] = useState<GameConfig>({ size: 3, difficulty: 'hard', humanSide: 1 })
   const [menuVisible, setMenuVisible] = useState(true)
   const [snap, setSnap] = useState<GameState>(() => emptyState(3, 1))
@@ -537,7 +539,7 @@ const showHowTo = useCallback(
   const humanMark = config.humanSide === P1 ? 'X' : 'O'
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.boardArea}>
         <Board3D
           size={snap.size}
@@ -573,12 +575,11 @@ const showHowTo = useCallback(
       </View>
 
       {!snap.demo && (
-        <View style={styles.bottom}>
+        <View style={[styles.bottom, { paddingBottom: insets.bottom }]}>
           <StatusBar
             state={snap}
             humanSide={config.humanSide}
             onPlayAgain={playAgain}
-            onNewGame={openMenu}
             onHint={onHint}
             onUndo={onUndo}
           />
@@ -586,7 +587,7 @@ const showHowTo = useCallback(
       )}
 
       {pending != null && isHumanTurn && (
-        <View style={styles.actionBar}>
+        <View style={[styles.actionBar, { bottom: spacing(15) + insets.bottom }]}>
           <Pressable onPress={placeMove} style={styles.placeBtn}>
             <Text style={styles.placeBtnText}>Place {humanMark}</Text>
           </Pressable>

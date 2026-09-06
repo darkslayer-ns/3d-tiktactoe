@@ -727,6 +727,75 @@ mobile-rn/
 
 ---
 
+## Glossary
+
+Plain-English definitions of the acronyms and jargon used above.
+
+### Model & inference
+
+| Term | What it means, in plain English |
+|------|---------------------------------|
+| **Transformer** | The neural-network architecture used here. Every cell "reads" every other cell at once (attention), so it can spot lines running diagonally through 3D space. |
+| **Model** | The trained "brain": a fixed set of numbers (weights) plus the code that uses them. |
+| **Training** | The phase where the brain's numbers are adjusted from data until it plays well. |
+| **Inference / forward pass** | Running the trained brain on a position to get an answer ("how good is this?" + "which move?"). The actual game only ever does inference — never training. |
+| **Epoch** | One complete pass over the whole training set. |
+| **Loss** | A number saying how wrong the brain's answer was on a sample; training nudges weights to make it smaller. |
+
+### Network parts & math
+
+| Term | What it means, in plain English |
+|------|---------------------------------|
+| **Token** | One input item — here, one cell of the cube ("a word in a sentence"). |
+| **Tokenizer** | The step that turns the board into tokens (`{0,1,2}` + a legal-move mask). |
+| **Embedding** | A learned "meaning vector" for a token — a list of numbers the network learns to give meaning (empty / mine / theirs). |
+| **d_model** | The size of each token's meaning vector (64 here). |
+| **MLP (Multi-Layer Perceptron)** | A small stack of "matrix multiply + activate" layers — the simplest kind of neural network. Used for the coordinate encoding and the value head. |
+| **d_FF (feed-forward width)** | The internal width of the encoder's middle layer (256 here). |
+| **nhead / heads** | How many parallel attention "meetings" run at once (8). |
+| **Attention / QKV** | **Q**uery/**K**ey/**V**alue: each token asks "how relevant are the others?" and mixes in their messages weighted by the answer. |
+| **LayerNorm** | Rescales numbers so they stay in a healthy range as they flow through the network. |
+| **GELU** | A smooth "soft on/off" activation function used in the feed-forward layer. |
+| **Logit** | A raw, unbounded score before it is turned into a probability. |
+| **Sigmoid** | Squeezes one number into a 0–1 probability (used for "win chance"). |
+| **Softmax** | Turns a list of scores into probabilities that sum to 1 (used for "which move?"). |
+| **Argmax** | "Pick the highest-scoring item" (the best move). |
+| **CE / BCE (Cross-Entropy / Binary Cross-Entropy)** | Loss functions for classification — how far the predicted move/outcome is from the correct one. |
+| **Top-K** | The K highest-scoring moves returned by the search. |
+| **Temperature** | A knob that flattens or sharpens probabilities — higher = more random sampling, lower = more greedy. |
+
+### Training methods
+
+| Term | What it means, in plain English |
+|------|---------------------------------|
+| **Supervised learning** | Learning from labelled examples ("here's the perfect move for this position"). |
+| **Distillation** | Training a small model to imitate a strong teacher (here, the alpha-beta solver). |
+| **Alpha-beta solver** | An exact search algorithm that explores the whole game tree (with pruning) and always finds the true best move — the "grandmaster" teacher. |
+| **RL (Reinforcement Learning)** | Learning from the outcome of your own actions (win / loss) instead of a teacher. |
+| **Self-play** | RL where the model plays games against itself. |
+| **Policy gradient** | The RL method that reinforces moves which led to wins and weakens those that led to losses. |
+| **Value** | The model's "win chance" answer for the side to move. |
+| **Policy** | The model's "which move to play" answer — a ranked/probability list over legal moves. |
+| **Expectimax** | A search that evaluates a move by the *expected* value over the opponent's likely replies. |
+
+### On-device & tooling
+
+| Term | What it means, in plain English |
+|------|---------------------------------|
+| **JSI (JavaScript Interface)** | React Native's C++↔JS bridge — how the app's JavaScript calls the compiled C++ engine. |
+| **TurboModule** | React Native's New-Architecture mechanism for exposing a native module to JS. |
+| **GEMM (General Matrix Multiply)** | The core "multiply a big grid of numbers" operation a transformer is mostly made of; sped up on-device with Eigen/Accelerate. |
+| **Parity** | Proof that the C++ engine gives bit-identical results to the Python reference. |
+| **RN / R3F** | React Native (the mobile framework) and @react-three/fiber (the React renderer for three.js). |
+| **GLB / GLTF** | 3D model file formats (Blender → game assets). |
+| **SDK / NDK / JDK** | Android Software Development Kit / Native Development Kit / Java Development Kit — the Android toolchains. |
+| **APK / IPA** | The Android / iOS app packages you install. |
+| **PvE** | Player vs Environment — here, a human vs the AI (no multiplayer). |
+| **GPL (GNU General Public License)** | This project's open-source license — you can use, study and modify it freely as long as you share your changes under the same license. |
+| **LRU (Least Recently Used)** | A cache policy that evicts the oldest entry first (used to memoize repeated board evaluations). |
+
+---
+
 ## License
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE).

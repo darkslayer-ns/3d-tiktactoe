@@ -48,6 +48,31 @@ Python backend is compiled into the app and called through JSI.
 
 ---
 
+## The whole thing in plain English
+
+**The idea in one sentence.** The game's AI is a tiny "brain" of about
+106,000 numbers. Nobody programmed it with rules like *"if the opponent has
+two in a row, block the third"* — instead it *learned* to play by watching a
+perfect player and then playing millions of games against itself. This project
+is a complete, from-scratch walkthrough of how to build that brain, and how to
+shrink it so it fits inside a phone and runs offline.
+
+**Think of each step like cooking from a recipe:**
+
+| Step | Jargon | What it really is |
+|------|--------|-------------------|
+| 1. Turn the board into a language | *tokenizer* (§1) | Transformers were invented for text, but they work on any sequence. We treat the 27 cells of a 3×3×3 cube as 27 "words" and read them all at once. |
+| 2. Give every box a meaning and a position | *embeddings* (§2) | Each cell gets a learned "meaning vector" (empty / mine / theirs) plus its 3D coordinate, so the brain knows both *what* is in each box and *where* it sits. |
+| 3. Let every word read every other word | *self-attention* (§3) | Each cell "looks at" all the others at the same time. This is how the brain spots lines running diagonally through 3D space — the ones humans routinely miss. |
+| 4. Ask two questions | *value + policy heads* (§4) | After thinking, the brain answers *"how likely am I to win?"* and *"which cell should I play next?"* |
+| 5. Teach it | *supervised + RL training* | First it imitates a perfect solver (like studying grandmaster games), then it plays thousands of games against itself and learns from each win and loss. |
+| 6. Ship it | *export → C++ → embed* (§6) | The 106k numbers are translated into a C++ file and embedded straight into the iOS/Android app, so it plays fully offline with no server. |
+
+Each technical section below has a **Layman's take** box that re-explains the
+same idea without the math.
+
+---
+
 ## How the AI was built (the training journey)
 
 ### Phase 1 — Supervised pretraining: learn from a strong teacher
@@ -101,6 +126,15 @@ casual human wins roughly the intended share per level.
 The training code lives in `dev/training/` and `dev/scripts/` (see
 [Repo map](#repo-map)).
 
+> **Layman's take.** Learning to play is like learning a musical instrument in
+> two stages. First you *copy a master* — the solver shows you the perfect move
+> for millions of positions, and the brain copies it until it's competent
+> (Phase 1, supervised). Then you *practice alone*: the brain plays thousands of
+> games against itself; whenever it wins, it slightly reinforces the moves that
+> led to the win, and whenever it loses, it weakens them (Phase 2, RL). Finally
+> we tune how often the brain "accidentally" plays a bad move so the game has an
+> Easy / Medium / Hard setting (Phase 3, calibration).
+
 ---
 
 ## 1. Input representation ("tokenizer")
@@ -129,6 +163,15 @@ mask   = [ 1, 0, 1, 0, 1, ... ]   1 where empty (legal moves)
 > `mobile-rn/src/ai/engine.ts` and `dev/training/selfplay.py:_state` implement
 > the same normalization; the C++ side re-checks it (`TfmEngine.cpp`).
 
+> **Layman's take — the "tokenizer".** Transformers were invented for text, but
+> they don't actually care about words — they care about *sequences*. Here we
+> simply call each cell of the cube a "word": a 3×3×3 board is a 27-word
+> "sentence", a 5×5×5 board is a 125-word sentence. The brain reads the whole
+> sentence at once. We also do a small trick so the brain only ever has to learn
+> *one* question — "am I winning?" — by always re-labelling the board so the
+> player whose turn it is is called "X". The `mask` is just the list of
+> legal (empty) cells, like telling the brain which words it's allowed to change.
+
 ---
 
 ## 2. Embedding
@@ -139,6 +182,13 @@ Two embeddings are added together to form the input to the transformer.
 
 A learned `nn.Embedding(3, d_model)` table maps the token `{0,1,2}` to a
 64-dim vector — the model learns a distinct vector for "empty", "mine", "their".
+
+> **Layman's take.** A "64-dim vector" is just a list of 64 numbers that stands
+> in for a word, like a dictionary entry. The brain starts with three random
+> entries (empty / mine / theirs) and, during training, slowly rewrites them so
+> that "mine" and "their" end up *feeling* different to the network. It's the
+> same idea as a word-embedding in a chatbot: "king" and "queen" live near each
+> other in the map, and here "empty" and "occupied" live far apart.
 
 ### 2b. Coordinate position encoding (size-agnostic)
 
@@ -166,6 +216,13 @@ the "universal" model possible.
  coords ──► CoordMLP(3→64) ──┘
 ```
 
+> **Layman's take — position.** A word's *meaning* alone isn't enough; you also
+> need to know where it sits in the sentence. ("the cat bit the dog" ≠ "the dog
+> bit the cat".) So each cell also gets a small vector built from its 3D
+> coordinate `(x, y, z)`. Because coordinates are squeezed into the range
+> 0…1 regardless of the cube size, the *same* trained brain understands a 3×3×3
+> board, a 4×4×4 board, and a 6×6×6 board — one model, every size.
+
 ---
 
 ## 3. Transformer encoder
@@ -173,6 +230,26 @@ the "universal" model possible.
 Two stacked encoder blocks process the token sequence. Each cell attends to
 every other cell, which is exactly what lets the model see **lines that run
 diagonally through 3D space** (self-attention has no locality bias).
+
+### How self-attention works (the Q/K/V story)
+
+> **Layman's take.** Imagine each cell is a guest at a round-table meeting, and
+> every guest wants to hear what every other guest has to say before making up
+> their mind. That's exactly what "self-attention" does. Mechanically each cell
+> writes three notes about itself:
+>
+> - a **Query** (Q) — "this is what I'm asking about",
+> - a **Key** (K) — "this is what I have to offer",
+> - a **Value** (V) — "this is my actual message".
+>
+> Every cell then looks at every other cell and scores "does your Key answer my
+> Query?" — cells that match get more attention, and the final output for each
+> cell is a weighted mix of everyone's Values. This is why the network sees
+> winning lines that cut diagonally through the cube: the two cells at opposite
+> corners of a diagonal pair up their Keys and Queries even though they're far
+> apart in the flat array. The "8 heads" just means the meeting happens 8 times
+> in parallel, each paying attention to a different kind of relationship
+> (e.g. one head might track straight rows, another the space diagonals).
 
 ```
                     x (N × 64)
@@ -199,6 +276,13 @@ diagonally through 3D space** (self-attention has no locality bias).
                  ▼             ▼
              value head    policy head
 ```
+
+> **Why residual connections + LayerNorm?** The "+(residual)" is a shortcut that
+> lets each cell keep its original information and only *adjust* it, rather than
+> fully rewriting it — this makes deep networks far easier to train (a famous
+> idea that made very deep transformers possible). LayerNorm just rescales the
+> numbers so they stay in a healthy range as they flow through the network —
+> think of it as "keep your volume reasonable" at each step.
 
 Each block implements the standard `norm_first=False` (post-norm) residual
 pattern:
@@ -227,6 +311,12 @@ value  = Linear(64→64) → ReLU → Linear(64→1)     → value logit v
 P(win for side-to-move) = sigmoid(v)
 ```
 
+> **Layman's take.** After the attention meeting, every cell has formed an
+> opinion. The value head simply *averages all the opinions* into one number and
+> converts it into a "chance of winning" between 0% and 100%. In a position
+> where you're about to complete a line, it should say ~99%; in a hopeless
+> position, ~1%.
+
 ### Policy head — "where should I play?"
 
 A single `Linear(64→1)` per cell produces a raw logit per cell:
@@ -248,6 +338,13 @@ best move = argmax over legal cells
  x (N×64) ──────┼───► Linear(64→1) per cell ──► logits
                 └──────────────► mask(−∞ on occupied) ──► softmax ──► policy
 ```
+
+> **Layman's take — policy.** The policy head is the "where do I move?" answer:
+> each cell gets a raw score, occupied cells are disqualified (masked to −∞),
+> and the scores are turned into a ranked list of probabilities. Playing the
+> highest-probability cell is the "best" move; sampling from the list with some
+> temperature is how the brain explores during training and how Easy/Medium
+> levels add variety.
 
 ---
 
@@ -278,6 +375,13 @@ The C++ implementation mirrors PyTorch **exactly** (eval mode, dropout off)
 and is checked byte-for-byte against the reference graph by a parity test
 (`cpp/tools/check_parity.py`, `mobile-rn` parity jest test).
 
+> **Layman's take — the whole forward pass.** Feeding a board through the network
+> is like running a single question through the brain: the board becomes a
+> "sentence" of cells → each cell gets a meaning + position → every cell reads
+> every other cell (attention) → the value head says "you're 63% likely to win"
+> and the policy head hands back a ranked list of legal moves. One forward pass,
+> a handful of milliseconds, two answers.
+
 ---
 
 ## 6. Export → on-device C++
@@ -301,6 +405,15 @@ no runtime framework. The C++ engine is registered as a TurboModule
 the PyTorch graph.
 
 `numel()` = **106,690** parameters.
+
+> **Layman's take — "translating the recipe".** The brain was trained in Python
+> (PyTorch) as a bunch of layer definitions and 106,690 numbers. To run on a
+> phone, we *translate* it by hand into C++ — the exact same operations, re-written
+> in a language the phone can run natively. The weights are then baked into the
+> app binary as a giant C array, so nothing is downloaded at runtime and there is
+> no server anywhere. The "parity test" is our guarantee that the phone's C++
+> brain makes byte-for-byte the same decisions the Python brain would — otherwise
+> Easy/Medium/Hard behaviour would silently differ between desktop and phone.
 
 ---
 
@@ -335,6 +448,16 @@ of the moves *you* play (boosted when you win) so the AI gradually learns your
 tendencies across sessions — heuristic, on-device, no weight updates.
 Difficulty also adapts to your recent results (win too much → it hardens; lose
 too much → it eases up).
+
+> **Layman's take — thinking ahead.** The brain alone is a one-shot "move
+> guesser". To be stronger, the game combines it with a mini search: "if I play
+> here, what's my expected chance of winning, assuming I keep using the brain for
+> the rest of the game?" — then it picks the move with the best score. Hard
+> *thinks 4 moves ahead* and never blunders; Medium thinks 3 ahead and makes one
+> subtle slip when it's about to win; Easy barely thinks (1 move), blunders up to
+> 6 times with fully random moves, and mostly *defends* instead of attacking. So
+> "difficulty" isn't a different brain — it's just how deep it thinks and how
+> often it deliberately plays badly.
 
 ---
 

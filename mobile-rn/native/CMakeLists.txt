@@ -86,9 +86,13 @@ target_include_directories(tfm_engine PUBLIC
 
 # Engine sources: C++17, -fPIC, no fast-math (parity). -O3 + armv8-a+dotprod
 # give the Eigen GEMMs the extra SIMD instructions (OpenMP was reverted — the
-# thread spawn cost dwarfed these small GEMMs).
+# thread spawn cost dwarfed these small GEMMs). dotprod is ARMv8-only, so gate
+# it to the arm64-v8a ABI — it is an invalid -march for x86/x86_64/armeabi-v7a.
 target_compile_options(tfm_engine PRIVATE
-  -fPIC -O3 -fexceptions -frtti -march=armv8-a+dotprod)
+  -fPIC -O3 -fexceptions -frtti)
+if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
+  target_compile_options(tfm_engine PRIVATE -march=armv8-a+dotprod)
+endif()
 set_target_properties(tfm_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # TfmEngine.cpp pulls in RN bridging headers that need C++20.

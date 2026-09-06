@@ -1,69 +1,72 @@
 /**
- * Central audio manager for ISOCUBE. Wraps `expo-audio` players for the
- * one-shot SFX (select, place, AI move). Assets live in assets/sounds/*.ogg.
+ * Central audio manager for ISOCUBE. Thin adapter: maps SFX names to
+ * `expo-audio` players and haptics, then delegates to the pure controller in
+ * ./sfx (overlap policy — sounds mix, never cut). Assets live in
+ * assets/sounds/*.m4a (AAC — the only portable codec: AVFoundation on iOS won't
+ * decode .ogg).
  */
 
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio'
 import * as Haptics from 'expo-haptics'
+import { createSfxController, type SfxName, type SfxTrack } from './sfx'
 
 const SFX = {
-  intro: require('../../assets/sounds/intro.ogg'),
-  select: require('../../assets/sounds/select.ogg'),
-  place: require('../../assets/sounds/place.ogg'),
-  ai: require('../../assets/sounds/ai_move.ogg'),
-  win: require('../../assets/sounds/win.ogg'),
-  lose: require('../../assets/sounds/lose.ogg'),
-  draw: require('../../assets/sounds/draw.ogg'),
-  click: require('../../assets/sounds/click.ogg'),
+  intro: require('../../assets/sounds/intro.m4a'),
+  select: require('../../assets/sounds/select.m4a'),
+  place: require('../../assets/sounds/place.m4a'),
+  ai: require('../../assets/sounds/ai_move.m4a'),
+  win: require('../../assets/sounds/win.m4a'),
+  lose: require('../../assets/sounds/lose.m4a'),
+  draw: require('../../assets/sounds/draw.m4a'),
+  click: require('../../assets/sounds/click.m4a'),
 } as const
 
-export type SfxName = keyof typeof SFX
+export type { SfxName }
 
-let sfxPlayers: Partial<Record<SfxName, AudioPlayer>> = {}
-let initialized = false
+let sfxPlayers = new Map<SfxName, SfxTrack>()
+let audioModeReady = false
 
-/** JSON-compatible shape of the runtime `require()`'d asset — only `uri` is used. */
-function uriOf(asset: unknown): string | null {
-  if (asset && typeof asset === 'object' && 'uri' in (asset as Record<string, unknown>)) {
-    return (asset as { uri: string }).uri as string
-  }
-  return null
-}
-
-/**
- * Configure the global audio session and lazily create the players. Safe to
- * call more than once (subsequent calls no-op). Players are created against
- * the resolved asset URI because the Expo bundler resolves `require()` of
- * audio assets to a JSON descriptor rather than a string path.
- */
-export function ensureAudio(): void {
-  if (initialized) return
-  initialized = true
-
+function ensureAudioMode(): void {
+  if (audioModeReady) return
+  audioModeReady = true
   void setAudioModeAsync({
+    // .playback category → the game follows the SYSTEM volume, so the hardware
+    // volume buttons control it continuously (turn volume to zero to mute).
     playsInSilentMode: true,
     shouldPlayInBackground: false,
     interruptionMode: 'mixWithOthers',
   }).catch(() => {})
+}
 
-  for (const [name, mod] of Object.entries(SFX) as Array<[SfxName, unknown]>) {
-    const uri = uriOf(mod)
-    if (!uri) continue
-    const p = createAudioPlayer(uri)
+/** Lazily create (on first use) the expo-audio player for `name`. The
+ * `require()` result is a numeric asset ID (Metro's `registerAsset`), which
+ * `expo-audio` resolves via `expo-asset`. */
+function getPlayer(name: SfxName): SfxTrack | null {
+  const existing = sfxPlayers.get(name)
+  if (existing) return existing
+  try {
+    const p: AudioPlayer = createAudioPlayer(SFX[name])
     p.loop = false
     p.volume = 1
-    sfxPlayers[name] = p
+    const track: SfxTrack = {
+      seekTo: (pos) => p.seekTo(pos),
+      play: () => p.play(),
+    }
+    sfxPlayers.set(name, track)
+    return track
+  } catch {
+    return null
   }
 }
 
-/** Play a one-shot SFX, restarting from the beginning if it was still ringing. */
-export function playSfx(name: SfxName): void {
-  ensureAudio()
-  const p = sfxPlayers[name]
-  if (!p) return
-  p.seekTo(0).catch(() => {})
-  p.play()
-  hapticFor(name)
+const controller = createSfxController({
+  getTrack: getPlayer,
+  haptic: hapticFor,
+})
+
+export function playSfx(name: SfxName): Promise<void> {
+  ensureAudioMode()
+  return controller.play(name)
 }
 
 /** Fire the matching haptic alongside a SFX (no-op when unsupported). */
@@ -93,7 +96,7 @@ function hapticFor(name: SfxName): void {
   }
 }
 
-/** Selection-tick haptic for menu toggles / slider (no sound). */
+/** Selection-tick haptic for menu toggles / slider / cell selection. */
 export function hapticSelection(): void {
   void Haptics.selectionAsync().catch(() => {})
 }

@@ -13,7 +13,7 @@ import { playSfx } from './audio/SoundManager'
 
 export default function App() {
   useEffect(() => {
-    playSfx('intro')
+    void playSfx('intro')
   }, [])
 
   return (

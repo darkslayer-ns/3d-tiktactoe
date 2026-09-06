@@ -30,7 +30,7 @@ import { adaptiveLevel, emptyStats, recordResult, type GameStats } from '../../a
 import { emptyState, type EvalEngine, type GameConfig, type GameState } from '../../ai/types'
 import { IS_INTERNAL_BUILD } from '../../dev/internalBuild'
 import { ModelKnowledgePanel } from '../../dev/ModelKnowledgePanel'
-import { playSfx } from '../../audio/SoundManager'
+import { playSfx, hapticSelection } from '../../audio/SoundManager'
 
 /** Minimum cube-flash duration so a fast AI move still visibly "thinks". */
 const MIN_FLASH_MS = 180
@@ -175,30 +175,30 @@ const runAITurn = useCallback(async () => {
       if (elapsed < MIN_FLASH_MS) {
         await new Promise<void>((resolve) => setTimeout(resolve, MIN_FLASH_MS - elapsed))
       }
-      thinkingRef.current = false
       if (overRef.current) return
+      thinkingRef.current = false
       board.apply(move, aiSide)
-        playSfx('ai')
-        predictor.record(aiSide, move)
-        movesRef.current.push(move)
-        const outcome = board.outcome()
-        overRef.current = outcome.over
-        thinkingRef.current = false
-        if (outcome.over) endGame(outcome.winner)
-        setSnap((prev) => ({
-          ...prev,
-          cells: board.cells.slice(),
-          currentPlayer: outcome.over ? outcome.winner : humanSideRef.current,
-          winner: outcome.winner,
-          winningLine: outcome.line,
-          over: outcome.over,
-          thinking: false,
-          movesPlayed: movesRef.current.slice(),
-          lastAiMove: move,
-          hintIndex: null,
-        }))
-        setPending(null)
-      } catch {
+      playSfx('ai')
+      predictor.record(aiSide, move)
+      movesRef.current.push(move)
+      const outcome = board.outcome()
+      overRef.current = outcome.over
+      thinkingRef.current = false
+      if (outcome.over) endGame(outcome.winner)
+      setSnap((prev) => ({
+        ...prev,
+        cells: board.cells.slice(),
+        currentPlayer: outcome.over ? outcome.winner : humanSideRef.current,
+        winner: outcome.winner,
+        winningLine: outcome.line,
+        over: outcome.over,
+        thinking: false,
+        movesPlayed: movesRef.current.slice(),
+        lastAiMove: move,
+        hintIndex: null,
+      }))
+      setPending(null)
+    } catch {
         thinkingRef.current = false
         setSnap((prev) => ({ ...prev, thinking: false }))
       }
@@ -358,7 +358,7 @@ const runAITurn = useCallback(async () => {
       if (board.cells[index] !== EMPTY) return
       if (pending != null && !axisCross(pending, board.n).has(index)) return
       setPending(index)
-      playSfx('select')
+      hapticSelection()
     },
     [pending, snap.currentPlayer],
   )
@@ -374,7 +374,6 @@ const runAITurn = useCallback(async () => {
     const human = humanSideRef.current
     const { style, axis } = analyzeMove(board, human, pending)
     board.apply(pending, human)
-    playSfx('place')
     predictor.record(human, pending)
     const prof = profileRef.current
     if (prof) {
@@ -414,12 +413,17 @@ const runAITurn = useCallback(async () => {
       lastAiMove: null,
       hintIndex: null,
     }))
-    runAITurn()
+    // Render the user's mark first, THEN start the AI inference — on larger
+    // boards the render (instanced frame loop + pop-in) is the slow part, and
+    // the placed mark should visibly land before the cube starts "thinking".
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => {
+      runAITurn()
+    }, 180)
   }, [pending, snap.currentPlayer, runAITurn, endGame])
 
   const cancelPending = useCallback(() => {
     setPending(null)
-    playSfx('click')
   }, [])
 
   // Take back the last human move (and the AI reply that followed it), so the
@@ -480,27 +484,22 @@ const runAITurn = useCallback(async () => {
   }, [])
 
   const playAgain = useCallback(() => {
-    playSfx('click')
     startGame(configRef.current)
   }, [startGame])
 
   const handleStart = useCallback((cfg: GameConfig) => {
-    playSfx('click')
     startGame(cfg)
   }, [startGame])
 
   const openMenu = useCallback(() => {
-    playSfx('click')
     setMenuVisible(true)
   }, [])
 
   const onHint = useCallback(() => {
-    playSfx('click')
     void showHint()
   }, [showHint])
 
   const onUndo = useCallback(() => {
-    playSfx('click')
     undoMove()
   }, [undoMove])
 
@@ -508,7 +507,6 @@ const runAITurn = useCallback(async () => {
 // overlay so the animation literally shows how a game (and a win) works.
 const showHowTo = useCallback(
   (cfg: GameConfig) => {
-    playSfx('click')
     setWelcomeMode('howto')
     setWelcomeVisible(true)
     startDemo(cfg)
@@ -517,7 +515,6 @@ const showHowTo = useCallback(
 )
 
   const dismissWelcome = useCallback(() => {
-    playSfx('click')
     setWelcomeVisible(false)
     void setWelcomed()
     setMenuVisible(true)
@@ -540,6 +537,9 @@ const showHowTo = useCallback(
           hintIndex={snap.hintIndex}
           thinking={snap.thinking}
           startKey={roundKey}
+          winner={snap.winner}
+          over={snap.over}
+          humanSide={config.humanSide}
         />
 
         {engineError != null && (

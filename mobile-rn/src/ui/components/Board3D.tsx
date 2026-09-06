@@ -1,73 +1,48 @@
 /**
- * Native 3D board for Neon Cube — a port of the web Board3D
- * (frontend/src/components/Board3D.tsx) to @react-three/fiber/native
- * (expo-gl provides the GL context; the native <Canvas> creates it for us).
+ * Native 3D board for Neon Cube — a port of the web Board3D to
+ * @react-three/fiber/native, reworked for low-end Android perf.
  *
- * Visuals match the web build:
- *  - X marks = two crossed cyan emissive bars
+ * Perf model:
+ *  - Every visual is one of a handful of InstancedMesh draw calls. A 5×5×5
+ *    board used to be ~125 slots × ~16 meshes (~2,000 draw calls); it's now
+ *    5 instanced draw calls (slots / X / O / X-halo / O-halo) + 1 hit mesh.
+ *  - Geometry is low-poly and baked from Blender-authored GLBs into
+ *    `src/three/models.ts` (see scripts/gen_models.mjs), so there is no
+ *    runtime GLB parsing and no `file://` fetch on Android.
+ *  - The frame loop writes instance matrices/colors directly — no React
+ *    reconciler commits on moves/thinking, same as the previous version.
+ *
+ * Visuals match the previous build:
+ *  - X marks = two crossed cyan emissive bars (beveled Blender mesh)
  *  - O marks = pink emissive torus ring
- *  - empty cells = dark translucent slots that pulse cyan on the selected
- *    axis and dim off-axis
+ *  - empty cells = dark translucent slot frames that pulse cyan on the
+ *    selected axis / hint, dim off-axis, and "breathe" while thinking
  *  - a glowing purple cylinder draws the winning line
- *  - a yellow translucent box marks the pending (selected) cell
- *  - wireframe shell + two colored point lights + ambient light
+ *  - a yellow box marks the pending (selected) cell; white pulses last AI move
  *
- * Touch controls (no drei / no DOM OrbitControls):
- *  - ONE-FINGER DRAG: orbit. Implemented with RN's responder *capture* phase on
- *    the wrapper View (onMoveShouldSetResponderCapture). RNGH gestures are NOT
- *    used: on Android the expo-gl GLSurfaceView consumes touches before RNGH's
- *    native handlers ever see them. The responder capture runs in the same JS
- *    responder system R3F uses (its PanResponder on the GLView) and can steal
- *    drags/pinches while letting taps fall through to the canvas.
- *  - TWO-FINGER PINCH: zoom, tracked manually from nativeEvent.touches.
- *  - CELL TAPS: R3F-native mesh events (onPointerDown + onClick). The native
- *    Canvas only fires `onClick` when the whole gesture moved < 20px; we add
- *    a stricter 10px threshold on top for web parity by comparing the pointer
- *    down position recorded in onPointerDown.
+ * Subtle polish (opt-in via props, always on here):
+ *  - marks gently turn ~60% toward the camera so they stay readable
+ *  - an additive "halo" copy gives marks a soft rim/glow; idle color pulse
  *
- * R3F-native gotchas coded around:
- *  - `onClick` needs the PanResponder that the native Canvas installs. Because
- *    we only capture the responder once the gesture moves > 10px (or a second
- *    finger lands), a tap never triggers a capture and R3F sees the full tap; a
- *    drag cancels R3F's pointer (no click is fired), so drags never place a mark.
- *  - Non-interactive meshes get `raycast={() => null}` so they stay visible
- *    but are never hit by the raycaster (same trick as the web build).
- *  - The native Canvas manages dpr/antialias itself; we pass `gl.antialias`
- *    which it maps to GLView `msaaSamples`.
+ * Win/lose is a Blender-rendered trophy image shown by the GameOverOverlay.
  */
 
-import { memo, useMemo, useRef, useCallback, useEffect, type RefObject } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react'
 import { View, StyleSheet, type GestureResponderEvent } from 'react-native'
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber/native'
 import * as THREE from 'three'
 import { Theme } from '../theme'
 import { cellCoord, type Cell, type Coord } from '../../game/types'
+import { modelGeometry } from '../../three/geometry'
 
 /** Spread cells outward so inner cells of 4×4×4 / 5×5×5 are reachable. */
 const EXPLODE = 0.4
 
-/** Side length of each cell's box (same for every board size). */
-const SLOT_SIZE = 0.82 * (1 + EXPLODE) * 0.8
-/** Thickness of each slot's glowing edge bar (GL linewidth is ignored on Metal,
- * so the "cube lines" are thin boxes instead of line segments). */
-const EDGE_THICKNESS = 0.038
+/** Side length of each cell's invisible hit box. */
+const HIT_SIZE = 0.918
 
-/** The 12 edges of a slot box, as (position, box size) bar transforms. */
-const slotEdges: Array<{ pos: [number, number, number]; size: [number, number, number] }> = (() => {
-  const h = SLOT_SIZE / 2
-  const t = EDGE_THICKNESS
-  const bars: Array<{ pos: [number, number, number]; size: [number, number, number] }> = []
-  for (const sy of [-1, 1]) {
-    for (const sz of [-1, 1]) bars.push({ pos: [0, sy * h, sz * h], size: [SLOT_SIZE, t, t] })
-  }
-  for (const sx of [-1, 1]) {
-    for (const sz of [-1, 1]) bars.push({ pos: [sx * h, 0, sz * h], size: [t, SLOT_SIZE, t] })
-  }
-  for (const sx of [-1, 1]) {
-    for (const sy of [-1, 1]) bars.push({ pos: [sx * h, sy * h, 0], size: [t, t, SLOT_SIZE] })
-  }
-  return bars
-})()
+/** How far marks turn to face the camera (0 = flat board plane, 1 = full billboard). */
+const BILLBOARD = 0.6
 
 /** Camera orbit limits (web OrbitControls used 3..14). */
 const MIN_DISTANCE = 4
@@ -77,17 +52,38 @@ const MAX_PHI = Math.PI - 0.15
 
 const INITIAL_CAMERA_POSITION: [number, number, number] = [5, 4.5, 5.5]
 
-/** Camera distance that fits the whole n×n×n cube (with the explode spread).
- * Uses the REAL rendered half-extent (outermost cell center + half a cell box)
- * so every board size fills the screen consistently. */
+/** Camera distance that fits the whole n×n×n cube (with the explode spread). */
 function fitDistance(size: number, aspect = 0.5, vFovDeg = 45): number {
-  const halfExtent = ((size - 1) / 2) * (1 + EXPLODE) + SLOT_SIZE / 2
+  const halfExtent = ((size - 1) / 2) * (1 + EXPLODE) + 0.478
   const radius = halfExtent * Math.sqrt(3)
   const vHalf = (vFovDeg * Math.PI) / 360
   const hHalf = Math.atan(Math.tan(vHalf) * Math.max(0.1, aspect))
   const limitingHalf = Math.min(hHalf, vHalf)
   const d = radius / Math.tan(limitingHalf)
   return clamp(d * 1.1, MIN_DISTANCE, MAX_DISTANCE)
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, v))
+}
+
+/** Springy pop-in easing (easeOutBack). */
+function easeOutBack(t: number): number {
+  const c1 = 1.70158
+  const c3 = c1 + 1
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
+}
+
+/** The X-row and Y-column passing through `center` (a "+" cross in its layer). */
+export function axisCross(center: number | null, size: number): Set<number> {
+  const set = new Set<number>()
+  if (center == null || center < 0) return set
+  const [x, y, z] = cellCoord(center, size)
+  for (let i = 0; i < size; i++) {
+    set.add(i + size * (y + size * z)) // row along X
+    set.add(x + size * (i + size * z)) // column along Y
+  }
+  return set
 }
 
 /** Spherical target the camera eases toward (theta/phi around cube center). */
@@ -110,37 +106,19 @@ export interface Board3DProps {
   thinking: boolean
   /** increments on every game start — triggers the cube "teleports in" pop */
   startKey: number
-}
-
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, v))
-}
-
-/** The X-row and Y-column passing through `center` (a "+" cross in its layer). */
-export function axisCross(center: number | null, size: number): Set<number> {
-  const set = new Set<number>()
-  if (center == null || center < 0) return set
-  const [x, y, z] = cellCoord(center, size)
-  for (let i = 0; i < size; i++) {
-    set.add(i + size * (y + size * z)) // row along X
-    set.add(x + size * (i + size * z)) // column along Y
-  }
-  return set
-}
-
-/** Live highlight state for a cell, computed in the frame loop (no re-render). */
-function slotFocusState(index: number, size: number, pending: number) {
-  if (pending < 0 || pending >= size ** 3) return { onAxis: false, focusing: false }
-  const [px, py, pz] = cellCoord(pending, size)
-  const [x, y, z] = cellCoord(index, size)
-  const onAxis = (x === px && z === pz) || (y === py && z === pz)
-  return { onAxis, focusing: true }
+  /** game result, for the win/lose celebration (0 = none/draw) */
+  winner?: number
+  over?: boolean
+  /** which side the human plays (1 = X, 2 = O) — decides win vs lose */
+  humanSide?: number
+  /** optional gate: cells where this returns false are not tappable */
+  interactive?: (index: number) => boolean
 }
 
 /**
- * Mutable board state read every frame by the slots' useFrame loops. Board3D
- * mutates it on every render (RN side, instant) WITHOUT re-rendering the R3F
- * Canvas (memoized), so all visuals update on the next GL frame — no React
+ * Mutable board state read every frame by the frame loops. Board3D mutates it
+ * on every render (RN side, instant) WITHOUT re-rendering the R3F Canvas
+ * (memoized), so all visuals update on the next GL frame — no React
  * reconciler commits, which are what lagged big boards.
  */
 interface GameStateRef {
@@ -151,6 +129,10 @@ interface GameStateRef {
   thinking: boolean
   lastAiMove: number
   winningLine: Coord[] | null
+  winner: number
+  over: boolean
+  humanSide: number
+  interactive: ((index: number) => boolean) | null
 }
 
 /** cell index -> world position (same mapping as the web build). */
@@ -163,152 +145,331 @@ function cellPosition(index: number, size: number, expl: number): [number, numbe
 
 /** Current spherical of the initial camera angle, fit to `size`. */
 function defaultOrbitTarget(size: number): OrbitTarget {
-  const s = new THREE.Spherical().setFromVector3(
-    new THREE.Vector3(...INITIAL_CAMERA_POSITION),
-  )
+  const s = new THREE.Spherical().setFromVector3(new THREE.Vector3(...INITIAL_CAMERA_POSITION))
   return { theta: s.theta, phi: s.phi, distance: fitDistance(size) }
 }
 
-interface SlotProps {
-  index: number
-  position: [number, number, number]
+interface InstancesProps {
   size: number
   gameRef: RefObject<GameStateRef>
   onPointerDown: (e: ThreeEvent<PointerEvent>) => void
-  onClick: (e: ThreeEvent<MouseEvent>, index: number) => void
+  handleClick: (e: ThreeEvent<MouseEvent>, index: number) => void
+}
+
+/** Half extent of the outer cube (used to place celebration tokens above it). */
+function boardTop(size: number): number {
+  return ((size - 1) / 2) * (1 + EXPLODE) + 0.478
 }
 
 /**
- * One cell of the cube: a hit target, a glowing empty-slot border, and
- * pre-created X / O mark meshes. EVERYTHING (visibility, pop-in, dim, pulse,
- * thinking) is driven from the frame loop reading `gameRef`, so placing a mark
- * or the AI replying never goes through the React/R3F reconciler.
+ * All board visuals as instanced meshes, updated entirely from the frame loop.
  */
-const AnimatedSlot = memo(function AnimatedSlot({ index, position, size, gameRef, onPointerDown, onClick }: SlotProps) {
-  const edgeMat = useMemo(
-    () => new THREE.MeshBasicMaterial({ color: '#0284c7', transparent: true, opacity: 0.3 }),
+function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps) {
+  const count = size ** 3
+
+  const slotGeo = useMemo(() => modelGeometry('slot'), [])
+  const xGeo = useMemo(() => modelGeometry('mark_x'), [])
+  const oGeo = useMemo(() => modelGeometry('mark_o'), [])
+  const hitGeo = useMemo(() => new THREE.BoxGeometry(1, 1, 1), [])
+
+  const slotMat = useMemo(() => {
+    const mat = new THREE.MeshBasicMaterial({
+      color: '#ffffff',
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+    })
+    // The per-instance color (cyan × per-cell brightness) drives BOTH the tint
+    // and the alpha, restoring the translucent "glass" slot edges of the
+    // original build (which faded opacity per cell) instead of an opaque box.
+    mat.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <opacity_fragment>',
+        `#include <opacity_fragment>
+      diffuseColor.a *= max(vColor.r, max(vColor.g, vColor.b));`,
+      )
+    }
+    return mat
+  }, [])
+  const xMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#22d3ee',
+        emissive: new THREE.Color('#22d3ee'),
+        emissiveIntensity: 0.5,
+        roughness: 0.3,
+        metalness: 0.05,
+      }),
     [],
   )
-  const posV = useMemo(() => new THREE.Vector3(position[0], position[1], position[2]), [position])
-  const edgesG = useRef<THREE.Group>(null)
-  const xG = useRef<THREE.Group>(null)
-  const oG = useRef<THREE.Group>(null)
-  const hitMesh = useRef<THREE.Mesh>(null)
-  const defaultRaycast = useRef<((raycaster: THREE.Raycaster, intersects: THREE.Intersection[]) => void) | null>(null)
-  const xMats = useRef<THREE.MeshStandardMaterial[]>([])
-  const oMat = useRef<THREE.MeshStandardMaterial | null>(null)
-  const born = useRef(-1)
-  const lastVal = useRef(0)
+  const oMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#f472b6',
+        emissive: new THREE.Color('#f472b6'),
+        emissiveIntensity: 0.5,
+        roughness: 0.3,
+        metalness: 0.05,
+      }),
+    [],
+  )
+  const haloXMat = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: '#ffffff',
+        transparent: true,
+        opacity: 0.14,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    [],
+  )
+  const haloOMat = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: '#ffffff',
+        transparent: true,
+        opacity: 0.14,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    [],
+  )
+  const hitMat = useMemo(
+    () => new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
+    [],
+  )
 
-  const scale = 0.55
-  const xLen = 1.15 * scale
+  const slotsRef = useRef<THREE.InstancedMesh>(null)
+  const xRef = useRef<THREE.InstancedMesh>(null)
+  const oRef = useRef<THREE.InstancedMesh>(null)
+  const haloXRef = useRef<THREE.InstancedMesh>(null)
+  const haloORef = useRef<THREE.InstancedMesh>(null)
+  const hitsRef = useRef<THREE.InstancedMesh>(null)
 
-  const xMat = (m: THREE.MeshStandardMaterial | null) => {
-    if (m && !xMats.current.includes(m)) xMats.current.push(m)
-  }
+  // Precomputed cell world positions (constant per size).
+  const positions = useMemo(() => {
+    const arr = new Float32Array(count * 3)
+    for (let i = 0; i < count; i++) {
+      const [x, y, z] = cellPosition(i, size, EXPLODE)
+      arr[i * 3] = x
+      arr[i * 3 + 1] = y
+      arr[i * 3 + 2] = z
+    }
+    return arr
+  }, [count, size])
+
+  const born = useMemo(() => new Float32Array(count).fill(-1), [count])
+  const prevVal = useMemo(() => new Int8Array(count), [count])
+
+  // Reusable temporaries (no per-frame allocations).
+  const m = useMemo(() => new THREE.Matrix4(), [])
+  const q = useMemo(() => new THREE.Quaternion(), [])
+  const v = useMemo(() => new THREE.Vector3(), [])
+  const s = useMemo(() => new THREE.Vector3(), [])
+  const c = useMemo(() => new THREE.Color(), [])
+  const up = useMemo(() => new THREE.Vector3(0, 1, 0), [])
+
+  // Wrap-free camera yaw (accumulated), so the marks' partial billboard never
+  // snaps when the orbit crosses the ±180° boundary.
+  const lastCamYaw = useRef<number | null>(null)
+  const continuousYaw = useRef(0)
+
+  const cSlot = useMemo(() => new THREE.Color('#0284c7'), [])
+  const cSlotDim = useMemo(() => new THREE.Color('#0c4a6e'), [])
+  const cSlotBright = useMemo(() => new THREE.Color('#22d3ee'), [])
+  const cCyan = useMemo(() => new THREE.Color('#22d3ee'), [])
+  const cPink = useMemo(() => new THREE.Color('#f472b6'), [])
+  const cGold = useMemo(() => new THREE.Color('#fbbf24'), [])
 
   useFrame((state) => {
+    const slots = slotsRef.current
+    const xm = xRef.current
+    const om = oRef.current
+    const hx = haloXRef.current
+    const ho = haloORef.current
+    const hits = hitsRef.current
+    if (!slots || !xm || !om || !hx || !ho || !hits) return
+
     const g = gameRef.current
-    const v = g.cells[index] ?? 0
-    const filled = v !== 0
-    if (edgesG.current) edgesG.current.visible = !filled
-    if (xG.current) xG.current.visible = v === 1
-    if (oG.current) oG.current.visible = v === 2
-
-    const { focusing, onAxis } = slotFocusState(index, size, g.pending)
-    const hintPulse = index === g.hint
-    const dim = focusing && !onAxis
-    const intensity = focusing && !onAxis ? 0.2 : 0.9
-
-    // Hit-test occlusion: only empty cells that are on the selected axis (or
-    // everything when nothing is selected) are raycast-able. Off-axis/outer
-    // cells become no-ops so the tap reaches INNER cells on the axis instead
-    // of hitting the outer cell in front of them.
-    const hit = hitMesh.current
-    if (hit) {
-      if (!defaultRaycast.current) defaultRaycast.current = hit.raycast
-      const hittable = !filled && (!focusing || onAxis)
-      const want = hittable ? defaultRaycast.current : THREE.Object3D.prototype.raycast
-      if (hit.raycast !== want) hit.raycast = want
-    }
-
-    // Mark pop-in when the cell flips to filled.
-    const grp = v === 1 ? xG.current : oG.current
-    if (filled && lastVal.current !== v) {
-      born.current = state.clock.elapsedTime
-      if (grp) grp.scale.setScalar(0.001)
-    }
-    lastVal.current = v
-    if (filled && grp) {
-      const bt = born.current
-      const t = bt >= 0 ? Math.min(1, (state.clock.elapsedTime - bt) / 0.42) : 1
-      if (bt >= 0 && t < 1) {
-        const c1 = 1.70158
-        const c3 = c1 + 1
-        const s = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
-        grp.scale.setScalar(Math.max(0.001, s))
-      } else {
-        grp.scale.setScalar(1)
-      }
-      const flash = bt >= 0 && t < 1 ? 1 + 2.5 * (1 - t) : 1
-      for (const m of xMats.current) m.emissiveIntensity = intensity * flash
-      if (oMat.current) oMat.current.emissiveIntensity = intensity * flash
-    }
-
-    // Empty-slot border: depth fade + axis/hint pulse + thinking breathe.
+    const cells = g.cells
+    const pending = g.pending
     const now = state.clock.elapsedTime
-    const camDist = state.camera.position.length() || 1
-    const depth = state.camera.position.distanceTo(posV) / camDist
-    const fade = clamp(1.9 - depth, 0.15, 1)
-    if (onAxis || hintPulse) {
-      edgeMat.color.set('#0284c7')
-      edgeMat.opacity = (0.4 + 0.15 * Math.sin(now * 6)) * fade
-    } else if (g.thinking) {
-      edgeMat.color.set('#0284c7')
-      edgeMat.opacity = (0.2 + 0.15 * (0.5 + 0.5 * Math.sin(now * 4))) * fade
+    const camPos = state.camera.position
+    const camDist = camPos.length() || 1
+    const half = boardTop(size)
+
+    // Smooth, wrap-free yaw for the marks' partial billboard.
+    const rawYaw = Math.atan2(camPos.x, camPos.z)
+    if (lastCamYaw.current == null) {
+      lastCamYaw.current = rawYaw
     } else {
-      edgeMat.color.set(dim ? '#0c4a6e' : '#0284c7')
-      edgeMat.opacity = (dim ? 0.18 : 0.3) * fade
+      let d = rawYaw - lastCamYaw.current
+      if (d > Math.PI) d -= 2 * Math.PI
+      if (d < -Math.PI) d += 2 * Math.PI
+      continuousYaw.current += d
+      lastCamYaw.current = rawYaw
     }
+    q.setFromAxisAngle(up, continuousYaw.current * BILLBOARD)
+
+    const focusing = pending >= 0 && pending < count && cells[pending] === 0
+    let ppx = -1
+    let ppy = -1
+    let ppz = -1
+    if (focusing) {
+      const pc = cellCoord(pending, size)
+      ppx = pc[0]
+      ppy = pc[1]
+      ppz = pc[2]
+    }
+
+    // Winning-line cells flash gold.
+    let winSet: Set<number> | null = null
+    if (g.winningLine && g.winningLine.length >= 2) {
+      winSet = new Set(g.winningLine.map((c) => c[0] + size * (c[1] + size * c[2])))
+    }
+    const loseDim = g.over && g.winner !== 0 && g.winner !== g.humanSide ? 0.35 : 1
+
+    for (let i = 0; i < count; i++) {
+      const px = positions[i * 3]
+      const py = positions[i * 3 + 1]
+      const pz = positions[i * 3 + 2]
+      const val = cells[i]
+      const filled = val !== 0
+      const cc = cellCoord(i, size)
+      const onAxis = focusing && ((cc[0] === ppx && cc[2] === ppz) || (cc[1] === ppy && cc[2] === ppz))
+      const hintPulse = i === g.hint
+      const dim = focusing && !onAxis
+
+      // Depth fade: map each cell's camera distance onto 0 (nearest) .. 1
+      // (farthest) across the cube's extent, then darken far cells so the
+      // lattice clearly reads as 3D.
+      const depth = camPos.distanceTo(v.set(px, py, pz))
+      const depthT = clamp((depth - (camDist - half)) / Math.max(0.01, 2 * half), 0, 1)
+      const fade = 1 - 0.72 * depthT
+
+      // ---- slot frame (empty cells only) ----
+      if (!filled) {
+        let bright
+        if (onAxis || hintPulse) {
+          c.copy(cSlotBright)
+          bright = (0.55 + 0.25 * Math.sin(now * 6)) * fade
+        } else if (g.thinking) {
+          c.copy(cSlot)
+          bright = (0.45 + 0.2 * (0.5 + 0.5 * Math.sin(now * 4))) * fade
+        } else {
+          c.copy(dim ? cSlotDim : cSlot)
+          bright = (dim ? 0.42 : 0.72) * fade
+        }
+        c.multiplyScalar(bright * loseDim)
+        slots.setColorAt(i, c)
+        m.makeScale(1, 1, 1)
+        m.setPosition(px, py, pz)
+        slots.setMatrixAt(i, m)
+      } else {
+        m.makeScale(0, 0, 0)
+        slots.setMatrixAt(i, m)
+      }
+
+      // ---- marks + halo ----
+      const mark = val === 1 ? xm : om
+      const halo = val === 1 ? hx : ho
+      const haloBrand = val === 1 ? cCyan : cPink
+      const winner = !!(winSet && winSet.has(i) && g.over)
+      if (filled) {
+        if (prevVal[i] !== val) born[i] = now
+        const bt = born[i]
+        const t = bt >= 0 ? Math.min(1, (now - bt) / 0.42) : 1
+        const sc = t >= 1 ? 1 : Math.max(0.001, easeOutBack(t))
+
+        // partial billboard: `q` is the shared wrap-free yaw computed above
+
+        m.compose(v.set(px, py, pz), q, s.set(sc, sc, sc))
+        mark.setMatrixAt(i, m)
+        m.compose(v.set(px, py, pz), q, s.set(sc * 1.07, sc * 1.07, sc * 1.07))
+        halo.setMatrixAt(i, m)
+
+        // Body brightness (material color is saturated brand; instanceColor
+        // modulates it): dim off-axis, brief flash on pop-in, gold-bright win.
+        if (winner) {
+          c.setScalar(1.35 * fade)
+        } else {
+          let mul = 1
+          if (dim) mul = 0.4
+          if (t < 1) mul *= 1 + 0.7 * (1 - t)
+          c.setScalar(mul * fade * loseDim)
+        }
+        mark.setColorAt(i, c)
+
+        // Halo tint: brand color normally, pulsing gold on the winning line.
+        if (winner) {
+          c.copy(cGold).multiplyScalar(0.7 + 0.5 * Math.sin(now * 7))
+        } else {
+          c.copy(haloBrand)
+        }
+        halo.setColorAt(i, c)
+
+        // hide the other mark
+        const other = val === 1 ? om : xm
+        const otherHalo = val === 1 ? ho : hx
+        m.makeScale(0, 0, 0)
+        other.setMatrixAt(i, m)
+        otherHalo.setMatrixAt(i, m)
+      } else {
+        m.makeScale(0, 0, 0)
+        xm.setMatrixAt(i, m)
+        om.setMatrixAt(i, m)
+        hx.setMatrixAt(i, m)
+        ho.setMatrixAt(i, m)
+      }
+      prevVal[i] = val
+
+      // ---- hit target ----
+      const hittable =
+        !filled &&
+        (!focusing || onAxis) &&
+        (g.interactive ? g.interactive(i) : true)
+      if (hittable) {
+        m.makeScale(HIT_SIZE, HIT_SIZE, HIT_SIZE)
+        m.setPosition(px, py, pz)
+      } else {
+        m.makeScale(0, 0, 0)
+      }
+      hits.setMatrixAt(i, m)
+    }
+
+    slots.instanceMatrix.needsUpdate = true
+    xm.instanceMatrix.needsUpdate = true
+    om.instanceMatrix.needsUpdate = true
+    hx.instanceMatrix.needsUpdate = true
+    ho.instanceMatrix.needsUpdate = true
+    hits.instanceMatrix.needsUpdate = true
+    if (slots.instanceColor) slots.instanceColor.needsUpdate = true
+    if (xm.instanceColor) xm.instanceColor.needsUpdate = true
+    if (om.instanceColor) om.instanceColor.needsUpdate = true
+    if (hx.instanceColor) hx.instanceColor.needsUpdate = true
+    if (ho.instanceColor) ho.instanceColor.needsUpdate = true
   })
 
   return (
-    <group position={position}>
-      {/* invisible hit target (transparent faces would show triangle seams).
-          Always hittable — legality is enforced in clickCell. */}
-      <mesh ref={hitMesh} onPointerDown={onPointerDown} onClick={(e) => onClick(e, index)}>
-        <boxGeometry args={[SLOT_SIZE, SLOT_SIZE, SLOT_SIZE]} />
-        <meshStandardMaterial transparent opacity={0} depthWrite={false} />
-      </mesh>
-      {/* glowing cyan border: one thin box per edge, sharing one animated material */}
-      <group ref={edgesG}>
-        {slotEdges.map((b, i) => (
-          <mesh key={i} position={b.pos} raycast={() => null} material={edgeMat}>
-            <boxGeometry args={b.size} />
-          </mesh>
-        ))}
-      </group>
-      {/* X mark: two crossed cyan emissive bars */}
-      <group ref={xG}>
-        <mesh raycast={() => null} rotation={[0, 0, Math.PI / 4]}>
-          <boxGeometry args={[xLen, 0.22, 0.22]} />
-          <meshStandardMaterial ref={xMat} color="#22d3ee" emissive="#22d3ee" emissiveIntensity={0.9} roughness={0.25} />
-        </mesh>
-        <mesh raycast={() => null} rotation={[0, 0, -Math.PI / 4]}>
-          <boxGeometry args={[xLen, 0.22, 0.22]} />
-          <meshStandardMaterial ref={xMat} color="#22d3ee" emissive="#22d3ee" emissiveIntensity={0.9} roughness={0.25} />
-        </mesh>
-      </group>
-      {/* O mark: pink emissive torus ring */}
-      <group ref={oG}>
-        <mesh raycast={() => null}>
-          <torusGeometry args={[0.42 * scale, 0.12, 16, 48]} />
-          <meshStandardMaterial ref={(m) => (oMat.current = m)} color="#f472b6" emissive="#f472b6" emissiveIntensity={0.9} roughness={0.25} />
-        </mesh>
-      </group>
-    </group>
+    <>
+      <instancedMesh ref={slotsRef} args={[slotGeo, slotMat, count]} frustumCulled={false} raycast={() => null} />
+      <instancedMesh ref={xRef} args={[xGeo, xMat, count]} frustumCulled={false} raycast={() => null} />
+      <instancedMesh ref={oRef} args={[oGeo, oMat, count]} frustumCulled={false} raycast={() => null} />
+      <instancedMesh ref={haloXRef} args={[xGeo, haloXMat, count]} frustumCulled={false} raycast={() => null} />
+      <instancedMesh ref={haloORef} args={[oGeo, haloOMat, count]} frustumCulled={false} raycast={() => null} />
+      <instancedMesh
+        ref={hitsRef}
+        args={[hitGeo, hitMat, count]}
+        frustumCulled={false}
+        onPointerDown={onPointerDown}
+        onClick={(e) => {
+          if (e.instanceId != null) handleClick(e, e.instanceId)
+        }}
+      />
+    </>
   )
-})
+}
 
 function WinBeam({ gameRef }: { gameRef: RefObject<GameStateRef> }) {
   const g = useRef<THREE.Group>(null)
@@ -414,22 +575,13 @@ function LastAiMoveHighlight({ gameRef }: { gameRef: RefObject<GameStateRef> }) 
   return (
     <mesh ref={m} raycast={() => null} visible={false}>
       <boxGeometry args={[s, s, s]} />
-      <meshBasicMaterial
-        ref={mat}
-        color="#ffffff"
-        transparent
-        opacity={0.4}
-        depthWrite={false}
-      />
+      <meshBasicMaterial ref={mat} color="#ffffff" transparent opacity={0.4} depthWrite={false} />
     </mesh>
   )
 }
 
-/**
- * "Teleport" pop-in: scales the cube from 0 up with a springy overshoot on
- * every game start. Rendered INSIDE the Canvas so useFrame is valid here.
- */
-function CubePop({ startKey, children }: { startKey: number; children: React.ReactNode }) {
+/** "Teleport" pop-in: scales the cube from 0 up on every game start. */
+function CubePop({ startKey, children }: { startKey: number; children: ReactNode }) {
   const g = useRef<THREE.Group>(null)
   const startRef = useRef(0)
 
@@ -445,19 +597,14 @@ function CubePop({ startKey, children }: { startKey: number; children: React.Rea
       grp.scale.setScalar(1)
       return
     }
-    const c1 = 1.70158
-    const c3 = c1 + 1
-    const s = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
-    grp.scale.setScalar(Math.max(0.001, s))
+    const s = Math.max(0.001, easeOutBack(t))
+    grp.scale.setScalar(s)
   })
 
   return <group ref={g}>{children}</group>
 }
 
-/**
- * Keeps the cube fitted to the ACTUAL canvas viewport (real width/height, so
- * the correct limiting FOV) until the user manually zooms.
- */
+/** Keeps the cube fitted to the actual canvas viewport until the user zooms. */
 function FitRig({
   size,
   userZoomed,
@@ -475,10 +622,7 @@ function FitRig({
   return null
 }
 
-/**
- * Eases the camera along a spherical orbit toward `target` (fed by the
- * pan/pinch gestures). Runs inside the R3F frame loop.
- */
+/** Eases the camera along a spherical orbit toward `target`. */
 function OrbitRig({ target }: { target: RefObject<OrbitTarget> }) {
   const spherical = useRef<THREE.Spherical | null>(null)
 
@@ -486,7 +630,6 @@ function OrbitRig({ target }: { target: RefObject<OrbitTarget> }) {
     const cam = state.camera
     const t = target.current
     if (!spherical.current) {
-      // Start at the fitted orbit so there's no initial zoom/settle motion.
       spherical.current = new THREE.Spherical(t.distance, t.phi, t.theta)
       cam.position.setFromSphericalCoords(t.distance, t.phi, t.theta)
       cam.lookAt(0, 0, 0)
@@ -504,43 +647,6 @@ function OrbitRig({ target }: { target: RefObject<OrbitTarget> }) {
   return null
 }
 
-interface BoardMeshProps {
-  size: number
-  gameRef: RefObject<GameStateRef>
-  onPointerDown: (e: ThreeEvent<PointerEvent>) => void
-  handleClick: (e: ThreeEvent<MouseEvent>, index: number) => void
-}
-
-function BoardMesh({ size, gameRef, onPointerDown, handleClick }: BoardMeshProps) {
-  const slots = useMemo(() => {
-    const arr: { index: number; pos: [number, number, number] }[] = []
-    for (let i = 0; i < size ** 3; i++) arr.push({ index: i, pos: cellPosition(i, size, EXPLODE) })
-    return arr
-  }, [size])
-
-  return (
-    <group>
-      {/* Every cell is a pre-created slot (edge bars + X + O meshes); the frame
-          loop toggles what's visible, so no reconciler commits on moves. */}
-      {slots.map(({ index, pos }) => (
-        <AnimatedSlot
-          key={index}
-          index={index}
-          position={pos}
-          size={size}
-          gameRef={gameRef}
-          onPointerDown={onPointerDown}
-          onClick={handleClick}
-        />
-      ))}
-
-      <PendingHighlight gameRef={gameRef} />
-      <LastAiMoveHighlight gameRef={gameRef} />
-      <WinBeam gameRef={gameRef} />
-    </group>
-  )
-}
-
 export function Board3D({
   size,
   cells,
@@ -551,14 +657,15 @@ export function Board3D({
   hintIndex,
   thinking,
   startKey,
+  winner = 0,
+  over = false,
+  humanSide = 1,
+  interactive,
 }: Board3DProps) {
-  // Spherical orbit target, written by the gestures, read by OrbitRig.
   const target = useRef<OrbitTarget>(defaultOrbitTarget(size))
   const userZoomed = useRef(false)
   const pinchStartDist = useRef(0)
-  // Mutable board state read by the frame loops. Mutated on every render (RN
-  // side, instant); the R3F Canvas is memoized, so nothing re-renders on game
-  // state changes — visuals update on the next GL frame.
+
   const gameRef = useRef<GameStateRef>({
     cells,
     size,
@@ -567,6 +674,10 @@ export function Board3D({
     thinking,
     lastAiMove: lastAiMove ?? -1,
     winningLine,
+    winner,
+    over,
+    humanSide,
+    interactive: interactive ?? null,
   })
   gameRef.current.cells = cells
   gameRef.current.size = size
@@ -575,10 +686,12 @@ export function Board3D({
   gameRef.current.thinking = thinking
   gameRef.current.lastAiMove = lastAiMove ?? -1
   gameRef.current.winningLine = winningLine
-  // Pointer-down position for the manual 10px click threshold (web parity).
+  gameRef.current.winner = winner
+  gameRef.current.over = over
+  gameRef.current.humanSide = humanSide
+  gameRef.current.interactive = interactive ?? null
+
   const downRef = useRef<{ x: number; y: number } | null>(null)
-  // Keep the latest onCellClick without changing handleClick's identity (so the
-  // memoized slots don't re-render on every GameScreen state change).
   const onCellClickRef = useRef(onCellClick)
   onCellClickRef.current = onCellClick
 
@@ -587,31 +700,20 @@ export function Board3D({
     downRef.current = { x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY }
   }, [])
 
-  const handleClick = useCallback(
-    (e: ThreeEvent<MouseEvent>, index: number) => {
-      e.stopPropagation()
-      const d = downRef.current
-      const x = e.nativeEvent.offsetX
-      const y = e.nativeEvent.offsetY
-      if (d && Math.hypot(x - d.x, y - d.y) > 10) return
-      onCellClickRef.current(index)
-    },
-    [],
-  )
+  const handleClick = useCallback((e: ThreeEvent<MouseEvent>, index: number) => {
+    e.stopPropagation()
+    const d = downRef.current
+    const x = e.nativeEvent.offsetX
+    const y = e.nativeEvent.offsetY
+    if (d && Math.hypot(x - d.x, y - d.y) > 10) return
+    onCellClickRef.current(index)
+  }, [])
 
-const pan = useRef({ theta: 0, phi: 0 })
+  const pan = useRef({ theta: 0, phi: 0 })
   const gestureStart = useRef<{ x: number; y: number } | null>(null)
   const pinchRefDist = useRef(0)
   const pinchActive = useRef(false)
 
-  // Android: react-native-gesture-handler never sees touches over the expo-gl
-  // GLSurfaceView (it consumes them at the native layer before RNGH's handlers).
-  // Instead we use RN's *responder capture* phase on the wrapper View, which runs
-  // before the GLView's own PanResponder (that R3F installs for cell taps):
-  //   - start phase: never claim -> taps fall through to the GLView -> cell taps.
-  //   - move phase: claim when the gesture becomes a drag or a second finger
-  //     lands -> we own pan/pinch and R3F cancels its pointer (no stray mark).
-  // This uses the same JS responder system R3F relies on, so it works over GL.
   const handleResponderGrant = useCallback((e: GestureResponderEvent) => {
     const touches = e.nativeEvent.touches
     gestureStart.current = gestureStart.current ?? {
@@ -620,7 +722,7 @@ const pan = useRef({ theta: 0, phi: 0 })
     }
     pan.current = { theta: target.current.theta, phi: target.current.phi }
     pinchStartDist.current = target.current.distance
-    pinchActive.current = touches && touches.length >= 2
+    pinchActive.current = !!touches && touches.length >= 2
     if (pinchActive.current) {
       pinchRefDist.current = Math.hypot(
         touches[1].pageX - touches[0].pageX,
@@ -706,8 +808,8 @@ const pan = useRef({ theta: 0, phi: 0 })
 }
 
 // Memoized: re-renders ONLY when size/startKey change, so game-state updates
-// (cells/pending/thinking) never re-run the R3F Canvas — the slots read
-// `gameRef` in their frame loops instead.
+// (cells/pending/thinking) never re-run the R3F Canvas — the frame loop reads
+// `gameRef` instead.
 const BoardScene = memo(function BoardScene({
   gameRef,
   size,
@@ -729,18 +831,17 @@ const BoardScene = memo(function BoardScene({
     <Canvas
       style={styles.canvas}
       camera={{ position: INITIAL_CAMERA_POSITION, fov: 45 }}
-      gl={{ antialias: true }}
+      gl={{ antialias: true, powerPreference: 'high-performance' }}
     >
-      <ambientLight intensity={0.5} />
+      <ambientLight intensity={0.55} />
+      <directionalLight position={[6, 10, 4]} intensity={1.0} color="#ffffff" />
       <pointLight position={[6, 6, 6]} intensity={1.2} color="#22d3ee" />
       <pointLight position={[-6, -4, 4]} intensity={0.8} color="#f472b6" />
       <CubePop startKey={startKey}>
-        <BoardMesh
-          size={size}
-          gameRef={gameRef}
-          onPointerDown={onPointerDown}
-          handleClick={handleClick}
-        />
+        <Instances size={size} gameRef={gameRef} onPointerDown={onPointerDown} handleClick={handleClick} />
+        <WinBeam gameRef={gameRef} />
+        <PendingHighlight gameRef={gameRef} />
+        <LastAiMoveHighlight gameRef={gameRef} />
       </CubePop>
       <FitRig size={size} userZoomed={userZoomed} target={target} />
       <OrbitRig target={target} />

@@ -7,4 +7,7 @@ const config = getDefaultConfig(__dirname)
 // the JS bundle.
 config.resolver.assetExts = config.resolver.assetExts.filter((e) => e !== 'bin')
 
+// One-shot SFX ship as .ogg (see src/audio/SoundManager.ts).
+config.resolver.assetExts.push('ogg')
+
 module.exports = config

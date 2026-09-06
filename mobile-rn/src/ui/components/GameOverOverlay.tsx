@@ -1,12 +1,12 @@
 /**
  * Game-over overlay (Stitch "Win Overlay" / "Loss Overlay" design):
- * a frosted-glass card floating center with a neon bloom title, an icon, a
- * pulsing glow, and a glowing PLAY AGAIN button. Animates in with a spring
- * scale + fade.
+ * a frosted-glass card floating center with a neon bloom title, a pulsing
+ * glow, and a glowing PLAY AGAIN button. The old text emoji icon is replaced
+ * by the Blender-rendered gold trophy (assets/models/trophy.png).
  */
 
 import { useEffect, useRef } from 'react'
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native'
 import { BlurView } from 'expo-blur'
 import { Theme, fontSize, radius, spacing } from '../theme'
 import { EMPTY, type Cell } from '../../game/types'
@@ -38,8 +38,6 @@ export function GameOverOverlay({ winner, humanSide, onPlayAgain, onMenu }: Game
   const isWin = !isDraw && winner === humanSide
   const accent = isDraw ? Theme.purple : isWin ? Theme.cyan : Theme.pink
   const title = isDraw ? 'DRAW' : isWin ? 'YOU WIN!' : 'ISOCUBE WINS'
-  const icon = isDraw ? '◆' : isWin ? '🏆' : '▣'
-  const iconColor = isDraw ? Theme.purple : isWin ? Theme.pink : Theme.cyan
 
   const glowOpacity = glow.interpolate({ inputRange: [0, 1], outputRange: [0.45, 1] })
 
@@ -57,9 +55,11 @@ export function GameOverOverlay({ winner, humanSide, onPlayAgain, onMenu }: Game
           },
         ]}
       >
-        <Animated.Text style={[styles.icon, { color: iconColor, opacity: glowOpacity }]}>
-          {icon}
-        </Animated.Text>
+        <Image
+          source={require('../../../assets/models/trophy.png')}
+          style={styles.icon}
+          resizeMode="contain"
+        />
         <Animated.Text
           style={[styles.title, { color: accent, textShadowColor: accent, opacity: glowOpacity }]}
         >
@@ -98,7 +98,7 @@ const styles = StyleSheet.create({
   card: {
     alignItems: 'center',
     paddingHorizontal: spacing(10),
-    paddingVertical: spacing(9),
+    paddingVertical: spacing(8),
     borderRadius: radius(6),
     borderWidth: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.85)',
@@ -107,8 +107,9 @@ const styles = StyleSheet.create({
     shadowRadius: 24,
   },
   icon: {
-    fontSize: fontSize(46),
-    marginBottom: spacing(3),
+    width: 116,
+    height: 116,
+    marginBottom: spacing(2),
   },
   title: {
     fontSize: fontSize(30),

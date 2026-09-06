@@ -46,7 +46,7 @@ void installTfmEngine(facebook::jsi::Runtime& runtime,
 // functions so the module works when called directly through TurboModuleProxy.
 //
 // Android: registered from the app's copied OnLoad.cpp cxxModuleProvider.
-// iOS:    registered through the ReactNativeFactory delegate (see README).
+// iOS:    registered by native/TfmEngineRegistration.mm's global registrar.
 class TfmEngineTurboModule
     : public facebook::react::TurboModule,
       public facebook::react::TurboModuleWithJSIBindings {
@@ -55,6 +55,7 @@ class TfmEngineTurboModule
 
   explicit TfmEngineTurboModule(
       std::shared_ptr<facebook::react::CallInvoker> jsInvoker);
+  ~TfmEngineTurboModule() override;
 
   void installJSIBindingsWithRuntime(facebook::jsi::Runtime& runtime) override;
 

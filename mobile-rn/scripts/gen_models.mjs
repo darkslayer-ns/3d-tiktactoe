@@ -21,7 +21,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const MODELS_DIR = path.join(__dirname, '..', 'assets', 'models')
 const OUT_FILE = path.join(__dirname, '..', 'src', 'three', 'models.ts')
 
-const MODELS = ['slot', 'mark_x', 'mark_o', 'spark', 'podium', 'trophy']
+// Runtime-instanced geometry. The trophy GLB remains a Blender source for the
+// rendered splash PNG, but is not parsed into the mobile runtime bundle.
+const MODELS = ['slot', 'mark_x', 'mark_o']
 
 function round(v, p = 5) {
   const f = Math.round(v * 10 ** p) / 10 ** p

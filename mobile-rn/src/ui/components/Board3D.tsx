@@ -28,7 +28,7 @@
  */
 
 import { memo, useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react'
-import { View, StyleSheet, type GestureResponderEvent } from 'react-native'
+import { View, AppState, StyleSheet, type GestureResponderEvent } from 'react-native'
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber/native'
 import * as THREE from 'three'
 import { Theme } from '../theme'
@@ -260,7 +260,18 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
   }, [count, size])
 
   const born = useMemo(() => new Float32Array(count).fill(-1), [count])
-  const prevVal = useMemo(() => new Int8Array(count), [count])
+  // Sync prevVal with the CURRENT board on mount (or on a scene remount after
+  // the GL context is recreated on foreground). Without this, an existing X/O
+  // would look like a brand-new placement and replay its pop-in animation.
+  const prevVal = useMemo(() => {
+    const arr = new Int8Array(count)
+    const cells = gameRef.current?.cells
+    if (cells) for (let i = 0; i < count; i++) arr[i] = cells[i] ?? 0
+    return arr
+  }, [count])
+  // Detects a render-clock reset (e.g. right after resume) so marks settle
+  // immediately instead of animating from a stale "born" timestamp.
+  const lastNow = useRef<number | null>(null)
 
   // Reusable temporaries (no per-frame allocations).
   const m = useMemo(() => new THREE.Matrix4(), [])
@@ -298,6 +309,16 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
     const camPos = state.camera.position
     const camDist = camPos.length() || 1
     const half = boardTop(size)
+
+    // A recreated GL context can restart the render clock. Treat the current
+    // board as settled instead of replaying every existing mark's pop-in.
+    if (lastNow.current != null && now < lastNow.current - 0.5) {
+      for (let i = 0; i < count; i++) {
+        born[i] = -1
+        prevVal[i] = cells[i] ?? 0
+      }
+    }
+    lastNow.current = now
 
     // Smooth, wrap-free yaw for the marks' partial billboard.
     const rawYaw = Math.atan2(camPos.x, camPos.z)
@@ -604,6 +625,30 @@ function CubePop({ startKey, children }: { startKey: number; children: ReactNode
   return <group ref={g}>{children}</group>
 }
 
+/**
+ * Pauses the R3F render loop while the app is in the background and resumes +
+ * forces a redraw when it comes back. expo-gl invalidates the GL drawable when
+ * an app is backgrounded (and R3F native does not handle this itself), so a
+ * still-running frame loop against a dead surface is what freezes the board on
+ * foreground — stopping the loop avoids that and lets it re-render cleanly.
+ */
+function AppLifecycle() {
+  const setFrameloop = useThree((s) => s.setFrameloop)
+  const invalidate = useThree((s) => s.invalidate)
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        setFrameloop('always')
+        invalidate()
+      } else {
+        setFrameloop('never')
+      }
+    })
+    return () => sub.remove()
+  }, [setFrameloop, invalidate])
+  return null
+}
+
 /** Keeps the cube fitted to the actual canvas viewport until the user zooms. */
 function FitRig({
   size,
@@ -837,6 +882,7 @@ const BoardScene = memo(function BoardScene({
       <directionalLight position={[6, 10, 4]} intensity={1.0} color="#ffffff" />
       <pointLight position={[6, 6, 6]} intensity={1.2} color="#22d3ee" />
       <pointLight position={[-6, -4, 4]} intensity={0.8} color="#f472b6" />
+      <AppLifecycle />
       <CubePop startKey={startKey}>
         <Instances size={size} gameRef={gameRef} onPointerDown={onPointerDown} handleClick={handleClick} />
         <WinBeam gameRef={gameRef} />

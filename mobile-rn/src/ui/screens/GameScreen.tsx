@@ -11,7 +11,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { AppState, Pressable, StyleSheet, Text, View, type AppStateStatus } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Theme, fontSize, radius, spacing } from '../theme'
 import { Board3D, axisCross } from '../components/Board3D'
@@ -70,6 +70,11 @@ export function GameScreen() {
   const movesRef = useRef<number[]>([])
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const configRef = useRef<GameConfig>(config)
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState)
+  const aiEpochRef = useRef(0)
+  const inferenceInFlightRef = useRef(false)
+  const resumeAiRef = useRef(false)
+  const resumeDemoRef = useRef(false)
 
   // Create the native engine once; surface load failures gracefully.
   useEffect(() => {
@@ -154,9 +159,14 @@ export function GameScreen() {
     [persistAffinity],
   )
 
-const runAITurn = useCallback(async () => {
+  const runAITurn = useCallback(async () => {
+    if (appStateRef.current !== 'active') {
+      resumeAiRef.current = true
+      return
+    }
     if (!boardRef.current || !moverRef.current || !predictorRef.current) return
     if (overRef.current || thinkingRef.current) return
+    const epoch = aiEpochRef.current
     const aiSide: Cell = humanSideRef.current === P1 ? P2 : P1
     thinkingRef.current = true
     // Flash starts immediately (the cube breathes) — the human's mark already
@@ -169,15 +179,41 @@ const runAITurn = useCallback(async () => {
     const predictor = predictorRef.current
     if (!board || !mover || !predictor) return
     if (overRef.current) return
+    inferenceInFlightRef.current = true
     try {
       const move = await mover.chooseMove(aiSide)
+      if (epoch !== aiEpochRef.current || appStateRef.current !== 'active') {
+        inferenceInFlightRef.current = false
+        thinkingRef.current = false
+        resumeAiRef.current = true
+        setSnap((prev) => ({ ...prev, thinking: false }))
+        if (appStateRef.current === 'active') {
+          resumeAiRef.current = false
+          setTimeout(() => void runAITurn(), 0)
+        }
+        return
+      }
       // Keep the flash visible for at least MIN_FLASH_MS so the player always
       // sees the move land AFTER the cube breathes (render → flash → resolve).
       const elapsed = Date.now() - startedAt
       if (elapsed < MIN_FLASH_MS) {
         await new Promise<void>((resolve) => setTimeout(resolve, MIN_FLASH_MS - elapsed))
       }
-      if (overRef.current) return
+      if (epoch !== aiEpochRef.current || appStateRef.current !== 'active') {
+        inferenceInFlightRef.current = false
+        thinkingRef.current = false
+        resumeAiRef.current = true
+        setSnap((prev) => ({ ...prev, thinking: false }))
+        if (appStateRef.current === 'active') {
+          resumeAiRef.current = false
+          setTimeout(() => void runAITurn(), 0)
+        }
+        return
+      }
+      if (overRef.current) {
+        inferenceInFlightRef.current = false
+        return
+      }
       thinkingRef.current = false
       board.apply(move, aiSide)
       playSfx('ai')
@@ -200,33 +236,59 @@ const runAITurn = useCallback(async () => {
         hintIndex: null,
       }))
       setPending(null)
+      inferenceInFlightRef.current = false
     } catch {
-        thinkingRef.current = false
-        setSnap((prev) => ({ ...prev, thinking: false }))
-      }
+      inferenceInFlightRef.current = false
+      thinkingRef.current = false
+      setSnap((prev) => ({ ...prev, thinking: false }))
+    }
   }, [endGame])
 
   // AI-vs-AI demo: plays the whole game by itself so the core loop can be
   // recorded/shown. Uses a throwaway predictor (empty memory) so demo games
   // never pollute the persistent opponent memory, and no win/loss reward.
   const runDemoTurn = useCallback(() => {
+    if (appStateRef.current !== 'active') {
+      resumeDemoRef.current = true
+      return
+    }
     const board = boardRef.current
     const mover = moverRef.current
     const predictor = predictorRef.current
     if (!board || !mover || !predictor) return
     if (overRef.current || !demoRef.current) return
     const side = turnRef.current
+    const epoch = aiEpochRef.current
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(async () => {
       try {
+        if (appStateRef.current !== 'active' || epoch !== aiEpochRef.current) {
+          resumeDemoRef.current = true
+          return
+        }
+        inferenceInFlightRef.current = true
         const move = await mover.chooseMove(side)
-        if (overRef.current || !demoRef.current) return
+        if (
+          overRef.current ||
+          !demoRef.current ||
+          appStateRef.current !== 'active' ||
+          epoch !== aiEpochRef.current
+        ) {
+          inferenceInFlightRef.current = false
+          resumeDemoRef.current = true
+          if (appStateRef.current === 'active' && !overRef.current && demoRef.current) {
+            resumeDemoRef.current = false
+            setTimeout(() => runDemoTurn(), 0)
+          }
+          return
+        }
         board.apply(move, side)
         predictor.record(side, move)
         movesRef.current.push(move)
         const outcome = board.outcome()
         if (outcome.over) {
           overRef.current = true
+          inferenceInFlightRef.current = false
           setSnap((prev) => ({
             ...prev,
             cells: board.cells.slice(),
@@ -242,6 +304,7 @@ const runAITurn = useCallback(async () => {
           return
         }
         turnRef.current = side === P1 ? P2 : P1
+        inferenceInFlightRef.current = false
         setSnap((prev) => ({
           ...prev,
           cells: board.cells.slice(),
@@ -254,10 +317,54 @@ const runAITurn = useCallback(async () => {
         runDemoTurn()
       } catch {
         // engine hiccup — stop the demo rather than spin forever
+        inferenceInFlightRef.current = false
         demoRef.current = false
       }
     }, 700)
   }, [])
+
+  // Do not spend CPU/native-engine time while the app is backgrounded. Any
+  // in-flight result is invalidated; the pending AI/demo turn is resumed once
+  // the app is active again instead of applying a stale move on return.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      const wasActive = appStateRef.current === 'active'
+      appStateRef.current = next
+
+      if (next !== 'active') {
+        if (demoRef.current && !overRef.current) {
+          resumeDemoRef.current = true
+        } else if (thinkingRef.current || timerRef.current != null) {
+          resumeAiRef.current = true
+        }
+        aiEpochRef.current += 1
+        if (timerRef.current) clearTimeout(timerRef.current)
+        timerRef.current = null
+        if (thinkingRef.current) {
+          thinkingRef.current = false
+          setSnap((prev) => (prev.thinking ? { ...prev, thinking: false } : prev))
+        }
+        return
+      }
+
+      if (!wasActive && !inferenceInFlightRef.current) {
+        if (resumeDemoRef.current) {
+          resumeDemoRef.current = false
+          timerRef.current = setTimeout(() => {
+            timerRef.current = null
+            runDemoTurn()
+          }, 0)
+        } else if (resumeAiRef.current) {
+          resumeAiRef.current = false
+          timerRef.current = setTimeout(() => {
+            timerRef.current = null
+            void runAITurn()
+          }, 0)
+        }
+      }
+    })
+    return () => sub.remove()
+  }, [runAITurn, runDemoTurn])
 
   const startDemo = useCallback(
     (cfg: GameConfig) => {

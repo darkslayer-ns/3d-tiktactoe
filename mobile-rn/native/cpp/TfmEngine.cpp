@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -28,6 +29,7 @@ using namespace facebook;
 // ---------------------------------------------------------------------------
 
 struct EngineState {
+  std::atomic_bool alive{true};
   std::mutex mu;
   std::mutex infer;  // serializes forward passes vs the background search
   std::shared_ptr<tfm::Model> model;
@@ -280,7 +282,8 @@ jsi::Value hostSearchScored(jsi::Runtime& rt, std::shared_ptr<EngineState> state
             execArgs[1].getObject(runtime).asFunction(runtime));
         jsi::Runtime* rtPtr = &runtime;
         std::thread([state, jsInvoker, model, resolve, reject, rtPtr, cells, n,
-                     ai, depth, topK, maxNodes, aggression]() {
+                      ai, depth, topK, maxNodes, aggression]() {
+          if (!state->alive.load(std::memory_order_acquire)) return;
           // Background search must NOT starve the UI/main thread: run at a
           // lower scheduling priority so clicks/render stay smooth.
 #if defined(__APPLE__)
@@ -295,8 +298,10 @@ jsi::Value hostSearchScored(jsi::Runtime& rt, std::shared_ptr<EngineState> state
               scored = tfm::searchScored(*model, cells, n, ai, depth, topK,
                                          maxNodes, aggression);
             }
+            if (!state->alive.load(std::memory_order_acquire)) return;
             jsInvoker->invokeAsync(
-                [rtPtr, resolve, reject, scored = std::move(scored)]() {
+                [state, rtPtr, resolve, reject, scored = std::move(scored)]() {
+                  if (!state->alive.load(std::memory_order_acquire)) return;
                   jsi::Runtime& rt2 = *rtPtr;
                   try {
                     jsi::Object result(rt2);
@@ -319,7 +324,9 @@ jsi::Value hostSearchScored(jsi::Runtime& rt, std::shared_ptr<EngineState> state
                 });
           } catch (const std::exception& e) {
             std::string msg = e.what();
-            jsInvoker->invokeAsync([rtPtr, reject, msg]() {
+            if (!state->alive.load(std::memory_order_acquire)) return;
+            jsInvoker->invokeAsync([state, rtPtr, reject, msg]() {
+              if (!state->alive.load(std::memory_order_acquire)) return;
               try {
                 reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, msg));
               } catch (...) {
@@ -439,6 +446,10 @@ class TfmEngineHostObject : public jsi::HostObject {
       : state_(std::make_shared<EngineState>()),
         jsInvoker_(std::move(jsInvoker)) {}
 
+  ~TfmEngineHostObject() override {
+    state_->alive.store(false, std::memory_order_release);
+  }
+
   jsi::Value get(jsi::Runtime& rt, const jsi::PropNameID& name) override {
     // Capture the shared_ptrs (not references) so a function returned to JS
     // keeps the engine + invoker alive even if the global is dropped.
@@ -537,6 +548,10 @@ TfmEngineTurboModule::TfmEngineTurboModule(
       7, &TfmEngineTurboModule::searchScoredHost};
   methodMap_["predictedLine"] = react::TurboModule::MethodMetadata{
       5, &TfmEngineTurboModule::predictedLineHost};
+}
+
+TfmEngineTurboModule::~TfmEngineTurboModule() {
+  state_->alive.store(false, std::memory_order_release);
 }
 
 void TfmEngineTurboModule::installJSIBindingsWithRuntime(

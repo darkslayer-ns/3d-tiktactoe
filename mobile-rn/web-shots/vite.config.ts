@@ -16,6 +16,8 @@ export default defineConfig({
         __dirname,
         'src/asyncStorageShim.ts',
       ),
+      'expo-audio': path.resolve(__dirname, 'src/expoAudioShim.ts'),
+      'expo-haptics': path.resolve(__dirname, 'src/expoHapticsShim.ts'),
     },
   },
   server: { port: 5199, host: '127.0.0.1' },

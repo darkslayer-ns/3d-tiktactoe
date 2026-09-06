@@ -335,6 +335,18 @@ const runAITurn = useCallback(async () => {
 
   // First launch: welcome overlay with an AI-vs-AI demo playing behind it.
   useEffect(() => {
+    // Screenshot mode (build with EXPO_PUBLIC_SCREENSHOT=1): start an AI-vs-AI
+    // demo with no overlays so App Store screenshots capture the game board.
+    if (process.env.EXPO_PUBLIC_SCREENSHOT === '1') {
+      setMenuVisible(false)
+      const t = setInterval(() => {
+        if (engineRef.current && !demoRef.current && !overRef.current) {
+          clearInterval(t)
+          startDemo({ size: 3, difficulty: 'medium', humanSide: 1 })
+        }
+      }, 120)
+      return () => clearInterval(t)
+    }
     let cancelled = false
     void getWelcomed().then((welcomed) => {
       if (cancelled) return

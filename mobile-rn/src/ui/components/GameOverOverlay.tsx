@@ -1,15 +1,15 @@
 /**
  * Game-over overlay (Stitch "Win Overlay" / "Loss Overlay" design):
  * a frosted-glass card floating center with a neon bloom title, a pulsing
- * glow, and a glowing PLAY AGAIN button. The old text emoji icon is replaced
- * by the Blender-rendered gold trophy (assets/models/trophy.png).
+ * glow, and a glowing PLAY AGAIN button. Wins use a Blender-rendered winner
+ * mark on the worn podium; draws keep the gold trophy.
  */
 
 import { useEffect, useRef } from 'react'
 import { Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native'
 import { BlurView } from 'expo-blur'
 import { Theme, fontSize, radius, spacing } from '../theme'
-import { EMPTY, type Cell } from '../../game/types'
+import { EMPTY, P1, type Cell } from '../../game/types'
 
 interface GameOverOverlayProps {
   winner: Cell
@@ -38,6 +38,11 @@ export function GameOverOverlay({ winner, humanSide, onPlayAgain, onMenu }: Game
   const isWin = !isDraw && winner === humanSide
   const accent = isDraw ? Theme.purple : isWin ? Theme.cyan : Theme.pink
   const title = isDraw ? 'DRAW' : isWin ? 'YOU WIN!' : 'ISOCUBE WINS'
+  const icon = isDraw
+    ? require('../../../assets/models/trophy.png')
+    : winner === P1
+      ? require('../../../assets/models/podium_win_x.png')
+      : require('../../../assets/models/podium_win_o.png')
 
   const glowOpacity = glow.interpolate({ inputRange: [0, 1], outputRange: [0.45, 1] })
 
@@ -56,7 +61,7 @@ export function GameOverOverlay({ winner, humanSide, onPlayAgain, onMenu }: Game
         ]}
       >
         <Image
-          source={require('../../../assets/models/trophy.png')}
+          source={icon}
           style={styles.icon}
           resizeMode="contain"
         />

@@ -686,10 +686,30 @@ const showHowTo = useCallback(
         <View style={[styles.topBar, { top: insets.top + spacing(2) }]} pointerEvents="box-none">
           <View style={styles.turnSlot} pointerEvents="none">
             {!snap.over && snap.currentPlayer === config.humanSide && (
-              <TurnFidget mark={snap.currentPlayer === P1 ? 'X' : 'O'} size={44} testID="turn-fidget" />
+              <>
+                <TurnFidget mark={config.humanSide === P1 ? 'X' : 'O'} size={44} testID="turn-fidget" />
+                <Text style={[styles.turnText, { color: config.humanSide === P1 ? Theme.cyan : Theme.pink }]}>
+                  Your turn
+                </Text>
+              </>
             )}
           </View>
-          <View style={styles.actionsRow}>
+          {IS_INTERNAL_BUILD && (
+            <Pressable
+              onPress={() => setKnowledgeVisible(true)}
+              style={styles.debugBtn}
+              hitSlop={8}
+              testID="debug-model-knowledge"
+            >
+              <Text style={styles.debugBtnText}>AI</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
+
+      {!snap.demo && (
+        <View style={[styles.bottomBar, { paddingBottom: insets.bottom }]}>
+          <View style={styles.bottomActions}>
             {!snap.over && snap.currentPlayer === config.humanSide && (
               <Pressable onPress={onHint} style={[styles.iconBtn, styles.iconBtnHint]} hitSlop={8} testID="hint-btn">
                 <Text style={styles.iconBtnHintText}>Hint</Text>
@@ -703,22 +723,12 @@ const showHowTo = useCallback(
             <Pressable onPress={openMenu} style={styles.iconBtn} hitSlop={8} testID="new-game-btn">
               <Text style={styles.iconBtnText}>New game</Text>
             </Pressable>
-            {IS_INTERNAL_BUILD && (
-              <Pressable
-                onPress={() => setKnowledgeVisible(true)}
-                style={styles.debugBtn}
-                hitSlop={8}
-                testID="debug-model-knowledge"
-              >
-                <Text style={styles.debugBtnText}>AI</Text>
-              </Pressable>
-            )}
           </View>
         </View>
       )}
 
       {pending != null && isHumanTurn && (
-        <View style={[styles.actionBar, { bottom: spacing(15) + insets.bottom }]}>
+        <View style={[styles.actionBar, { bottom: spacing(10) + insets.bottom }]}>
           <Pressable onPress={placeMove} style={styles.placeBtn}>
             <Text style={styles.placeBtnText}>Place {humanMark}</Text>
           </Pressable>
@@ -805,12 +815,23 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   turnSlot: {
-    width: 64,
-    height: 52,
-    alignItems: 'flex-start',
-    justifyContent: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing(2),
   },
-  actionsRow: {
+  turnText: {
+    fontSize: fontSize(15),
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  bottomBar: {
+    paddingHorizontal: spacing(4),
+    paddingTop: spacing(2),
+    backgroundColor: 'rgba(2, 6, 23, 0.85)',
+    borderTopWidth: 1,
+    borderTopColor: Theme.border,
+  },
+  bottomActions: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing(2),

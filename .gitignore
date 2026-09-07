@@ -31,6 +31,11 @@ __pycache__/
 # stray / legacy artifacts
 a
 *.png
+!mobile-rn/assets/sprites/*.png
+!mobile-rn/assets/models/podium.png
+!mobile-rn/assets/models/podium_wear.png
+!mobile-rn/assets/models/podium_win_*.png
+!mobile-rn/assets/models/podium_celebration_*.png
 ml_checkpoint.pt
 model_3_base.onnx
 model_universal/

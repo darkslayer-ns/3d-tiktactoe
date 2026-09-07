@@ -62,10 +62,14 @@ export function GameOverOverlay({ winner, humanSide, onPlayAgain, onMenu }: Game
             resizeMode="contain"
           />
         ) : (
-          <WinnerCelebration mark={winner === P1 ? 'X' : 'O'} size={160} />
+          <WinnerCelebration mark={winner === P1 ? 'X' : 'O'} size={190} />
         )}
         <Animated.Text
-          style={[styles.title, { color: accent, textShadowColor: accent, opacity: glowOpacity }]}
+          style={[
+            styles.title,
+            !isDraw && styles.winnerTitle,
+            { color: accent, textShadowColor: accent, opacity: glowOpacity },
+          ]}
         >
           {title}
         </Animated.Text>
@@ -102,10 +106,11 @@ const styles = StyleSheet.create({
   card: {
     alignItems: 'center',
     paddingHorizontal: spacing(10),
-    paddingVertical: spacing(8),
+    paddingVertical: spacing(7),
     borderRadius: radius(6),
     borderWidth: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    maxWidth: '92%',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.5,
     shadowRadius: 24,
@@ -122,8 +127,13 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 14,
   },
+  winnerTitle: {
+    fontSize: fontSize(22),
+    letterSpacing: 0.7,
+    textShadowRadius: 10,
+  },
   playBtn: {
-    marginTop: spacing(6),
+    marginTop: spacing(4),
     paddingVertical: spacing(3.5),
     paddingHorizontal: spacing(12),
     borderRadius: radius(6),

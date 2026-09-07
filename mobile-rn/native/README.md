@@ -15,12 +15,22 @@ entirely in the app binary:
   against the golden fixtures (`cpp/tests/parity.cpp` tolerances).
 - `cpp/TfmEngine.{h,cpp}` — the JSI layer:
   - `installTfmEngine(runtime)` installs `globalThis.__TfmEngine`, a
-    `jsi::HostObject` with `load()`, `evalPosition(board, mask, n)`, `numel()`.
+    `jsi::HostObject` with `load()`, `evalPosition(board, mask, n)`, `numel()`,
+    plus the coarse **native-AI session** methods: `aiStart(config)`,
+    `aiApplyMove(player, cell)`, `aiSetBoard(cells)`, `aiChooseMove(player)`
+    (async), `aiHint(player)` (async), `aiEndGame(winner)`, `aiState()`,
+    `aiKnowledge(humanSide)`.
   - `TfmEngineTurboModule` (C++ TurboModule) whose `installJSIBindingsWithRuntime`
     installs that global. The JS side requests it through
     `globalThis.__turboModuleProxy('TfmEngine')` (see `src/native/TfmEngine.ts`).
+- `cpp/NativeAI.{h,cpp}` — the **native AI session**: owns the board state,
+  the expectimax search, forced win/block checks, difficulty/blunders,
+  temperature sampling, the opponent-affinity memory, the player
+  aggression/perception profiles, adaptive stats, the hint rollout, and the
+  model-knowledge telemetry (`aiKnowledge`). This is the production runtime —
+  the old `src/ai` TypeScript modules are kept only as reference/parity tests.
 - `TfmEngine.podspec` — iOS: compiles `../cpp/src/*.cpp` + `cpp/TfmEngine.cpp`
-  into the app.
+  + `cpp/NativeAI.cpp` into the app.
 - `CMakeLists.txt` — Android: same sources as a static library `tfm_engine`,
   linked into `libappmodules.so`.
 
@@ -138,7 +148,10 @@ npx expo run:ios           # or open ios/ in Xcode and Run
 ### Sanity checks
 
 `numel()` returns `106690` (matches `cpp/build/tfm-cli`'s `params=`), and
-`load()` must return `true` before `evalPosition` is used.
+`load()` must return `true` before any `ai*` / `evalPosition` call is used.
+Start a game with `aiStart({ n, humanSide, difficulty, … })`, then drive it
+with `aiApplyMove` / `aiChooseMove` / `aiHint` and persist the state returned
+by `aiEndGame` / `aiState`.
 
 ## Verifying the engine + embedded weights (offline)
 

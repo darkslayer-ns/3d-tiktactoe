@@ -3,13 +3,15 @@
 Part of the [ISOCUBE project](../README.md): a 3D tic-tac-toe game whose AI is
 a small transformer, trained with supervised distillation + self-play RL and
 ported to C++. This directory is the **shipping iOS/Android app** — everything
-runs on-device, there is no API server. Game rules and the AI search are
-TypeScript; the neural-network forward pass runs in the same hand-written
-**C++ engine** (`cpp/`) compiled into the app and called through JSI.
+runs on-device, there is no API server. Game rules and rendering are
+TypeScript; the **entire AI runtime — neural forward pass, expectimax search,
+difficulty, hint, opponent memory and player profiles — lives in the same
+hand-written C++ engine** (`cpp/` + `native/cpp/NativeAI.cpp`) compiled into
+the app and called through a few coarse JSI methods.
 
 ```
-TS (rules + lookahead search + predictor)
-  └── JSI ──> libtfm (cpp/ engine, embedded weights) ──> move
+React (rules + rendering, render-mirror Board)
+  └── JSI ──> libtfm (cpp/ engine + NativeAI session, embedded weights) ──> move
 ```
 
 - **Expo SDK 57** / React Native 0.86 / React 19
@@ -23,20 +25,19 @@ TS (rules + lookahead search + predictor)
 ```
 mobile-rn/
   src/
-    game/board.ts        rules + winning lines (port of backend/game/board.py)
-    ai/math.ts           sigmoid / softmax / argmax / sample (pure)
-    ai/predictor.ts      opponent predictor (port of backend/ml/predictor.py)
-    ai/mover.ts          LookaheadMover + difficulty knobs (port)
-    ai/engine.ts         EvalEngine seam (native or mock)
-    ai/types.ts          shared contracts
-    native/TfmEngine.ts  JS side of the JSI module
+    game/board.ts        rules + winning lines (JS render/game-state mirror)
+    native/TfmEngine.ts  JS ↔ JSI wrapper (aiStart / aiApplyMove / aiChooseMove /
+                         aiHint / aiEndGame / aiKnowledge / aiState)
+    ai/                  reference implementation (used by Jest parity tests only)
     ui/                  Board3D, GameScreen, MenuSheet, StatusBar, theme
     three/               Blender-baked geometry (models.ts, geometry.ts)
     __tests__/           board/mover/predictor/parity tests + fixtures
   assets/
     models/              Blender .glb sources + the rendered trophy.png
     sounds/              SFX (.m4a)
-  native/                C++ JSI module (compiles cpp/ engine + embedded weights)
+  native/
+    cpp/NativeAI.cpp     the native AI session (search, difficulty, hint, memory)
+    cpp/TfmEngine.cpp    JSI/TurboModule host functions (coarse ai* methods)
   plugins/withTfmEngine.js  Expo config plugin (Android CMake + iOS pod)
   scripts/
     embed_weights.py     cpp/model.bin -> native/include/tfm_model_data.h

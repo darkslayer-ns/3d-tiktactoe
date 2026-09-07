@@ -20,7 +20,7 @@ flowchart TD
     TR -->|"export_weights.py"| BIN["TFM1 binary (cpp/model.bin)<br/>+ embed_weights.py → C array (in-app)"]
     BIN -->|"C++ port (byte-for-byte parity)"| FWD["tfm::Model::forward(n)<br/>→ value + policy logits"]
     BS["BoardState (n×n×n)"] -->|"tokens (normalize + mask)"| FWD
-    FWD -->|"JSI / TurboModule"| MVR["LookaheadMover (TS)<br/>search + difficulty knobs"]
+    FWD -->|"native AI session (C++)"| MVR["NativeAI<br/>search + difficulty + hint<br/>(coarse JSI: aiChooseMove / aiHint)"]
     MVR --> CH["chosen move"]
 ```
 
@@ -213,8 +213,8 @@ classic **policy-gradient / self-play** loop
 
 Easy / Medium / Hard are **not trained**. The app ships ONE universal model;
 difficulty is a hand-tuned table of runtime knobs — search depth, move
-temperature, blunder budget/rate — in `mobile-rn/src/ai/mover.ts`
-(`DIFFICULTY`).
+temperature, blunder budget/rate — in the native AI session
+(`mobile-rn/native/cpp/NativeAI.cpp`, `NativeAI::difficulty()`).
 
 The training code lives in `dev/training/` and `dev/scripts/` (see
 [Repo map](#repo-map)).
@@ -254,8 +254,9 @@ norm   = [ 0, 2, 0, 1, 0, ... ]   every non-empty O (2) becomes X (1),
 mask   = [ 1, 0, 1, 0, 1, ... ]   1 where empty (legal moves)
 ```
 
-> `mobile-rn/src/ai/engine.ts` and `dev/training/selfplay.py:_state` implement
-> the same normalization; the C++ side re-checks it (`TfmEngine.cpp`).
+> `mobile-rn/native/cpp/NativeAI.cpp` (the on-device AI session) and
+> `dev/training/selfplay.py:_state` implement the same normalization; the C++
+> engine re-checks it (`TfmEngine.cpp`).
 
 > **Layman's take — the "tokenizer".** Transformers were invented for text, but
 > they don't actually care about words — they care about *sequences*. Here we
@@ -466,8 +467,8 @@ and is checked byte-for-byte against the reference graph by a parity test
 flowchart TD
     PT["PyTorch model (.pt)"] -->|"export_weights.py"| TFM["TFM1 binary → cpp/model.bin"]
     TFM -->|"embed_weights.py"| H["tfm_model_data.h (C array)"]
-    H -->|"compiled into the app"| CPP["TfmEngine.cpp (tfm::Model, layers, ops)"]
-    CPP --> JSI["JS ⇄ C++ via JSI<br/>load() / evalPosition(board, mask, n) / numel()"]
+    H -->|"compiled into the app"| CPP["TfmEngine.cpp (tfm::Model, layers, ops)<br/>+ NativeAI.cpp (search, difficulty, hint)"]
+    CPP --> JSI["JS ⇄ C++ via JSI<br/>aiStart / aiApplyMove / aiChooseMove / aiHint<br/>/ aiEndGame / aiKnowledge"]
 ```
 
 The weights ship **inside the app binary** — no filesystem I/O, no network,
@@ -490,18 +491,21 @@ the PyTorch graph.
 
 ## 7. Search + difficulty (runtime behavior)
 
-The raw network is combined with a shallow lookahead to decide moves:
+The raw network is combined with a shallow lookahead to decide moves. **The
+whole runtime — search, difficulty, hint, opponent memory and profiles — lives
+in the native AI session (`mobile-rn/native/cpp/NativeAI.cpp`); React calls it
+through coarse JSI methods (`aiChooseMove`, `aiHint`, …):**
 
 ```mermaid
 flowchart TD
-    EV["evalPosition(board, side)"] --> CM["LookaheadMover.chooseMove(side)"]
+    EV["native board state (C++)"] --> CM["NativeAI.chooseMove(side)"]
     CM --> W["immediate win / block checks"]
     W --> SC["score every legal move via<br/>depth-limited expected-value search<br/>(net's policy head models your replies)"]
     SC --> PK["final pick from top-scored moves, temperature-tempered"]
 ```
 
 **Difficulty is not a different model** — it's runtime search parameters over
-the SAME weights (`mobile-rn/src/ai/mover.ts:DIFFICULTY`):
+the SAME weights (`NativeAI::difficulty()`):
 
 |            | Easy (≈65% AI win) | Medium (≈80%) | Hard (≈95%) |
 |------------|---------------------|---------------|-------------|
@@ -514,52 +518,54 @@ the SAME weights (`mobile-rn/src/ai/mover.ts:DIFFICULTY`):
 
 On top of the fixed transformer weights, the app keeps a small, persistent
 **opponent memory** — a per-side map of *which cells you like to play*,
-maintained entirely on-device (pure bookkeeping, no weight updates):
+maintained entirely on-device and held in the native session
+(pure bookkeeping, no weight updates):
 
 ```mermaid
 flowchart TD
-    A["You play a move — cell i"] --> B["affinity[you][i] += 1"]
+    A["You play a move — cell i"] --> B["NativeAI records affinity[you][i] += 1"]
     B --> C["Game ends"]
     C --> R{"Result?"}
     R -->|"You win"| W["Your cells × 1.25 (WIN_BOOST)<br/>AI learns what beat it"]
     R -->|"You lose"| L["Your cells × 0.5 (LOSS_DECAY)<br/>those moves are punished"]
     R -->|"Draw"| N["No change"]
-    W --> P["Saved to storage (AsyncStorage)"]
+    W --> P["Native state returned to storage (AsyncStorage)"]
     L --> P
     N --> P
     P --> F["Next game: all weights × 0.9 (recency fade)"]
-    F --> S{"AI's move search"}
+    F --> S{"AI's move search (C++)"}
     S --> D1["Deny: +DENY_WEIGHT × affinity<br/>on cells you overplay"]
     S --> D2["Predict replies: policy head ×<br/>your attacker/defender profile"]
 ```
 
 - **Recorded live** — every move you make increments that cell's affinity for
-  your side (`OpponentPredictor.record`).
+  your side (inside `NativeAI::recordAffinity`).
 - **Rewarded / punished after every game** — win → your played cells are boosted
   1.25× (`WIN_BOOST`); lose → they are decayed 0.5× (`LOSS_DECAY`); a draw
-  leaves them unchanged (`opponentMemory.applyResult`).
+  leaves them unchanged (`NativeAI::endGame`).
 - **Decayed per game** (× 0.9) so recent sessions count more than old ones.
-- **Persisted to on-device storage**, so the memory survives app restarts
-  (`opponentStorage.ts`).
+- **Persisted to on-device storage**, so the memory survives app restarts — the
+  native session returns its state (`aiEndGame` / `aiState`) and React stores it
+  via `opponentStorage.ts`.
 
-The search then uses this memory two ways while playing against you
-(`LookaheadMover._strongMove`, `src/ai/mover.ts`):
+The search then uses this memory two ways while playing against you, all inside
+the native session (`NativeAI::chooseMove`):
 
 1. **Denying your favourite cells.** Every move you've overplayed gets a
    "deny" bonus (`DENY_WEIGHT × affinity[you][cell]`) added to the AI's own
    move scores, so the AI prefers to take those cells itself instead of leaving
    them open — the more you play a square, the more the AI snatches it.
 2. **Predicting your replies.** During its lookahead the AI models where you're
-   likely to move next using the network's policy head
-   (`OpponentPredictor.likelyMoves`), re-weighted by your **style profile**
-   (attacker vs. defender — how often you build threats vs. block), so it
-   spends its search budget on the replies you're most likely to make.
+   likely to move next using the network's policy head, re-weighted by your
+   **style profile** (attacker vs. defender — how often you build threats vs.
+   block), so it spends its search budget on the replies you're most likely to
+   make.
 
-The affinity-blended move prediction (`predictDistribution`) is also exposed
-for the internal model-knowledge panel, but the live engine leans on the
-deny-bias + policy-head prediction. Files: `src/ai/predictor.ts` (in-game
-prediction), `src/ai/opponentMemory.ts` (cross-game learning),
-`src/ai/opponentStorage.ts` (persistence).
+The affinity-blended move prediction is also exposed for the internal
+model-knowledge panel (`aiKnowledge` → predicted replies + win probabilities +
+best move). The old TS AI modules (`src/ai/mover.ts`, `predictor.ts`,
+`opponentMemory.ts`) are now kept only as the reference implementation and
+Jest parity fixtures — the shipped app runs the native session.
 
 Difficulty also adapts to your recent results (win too much → it hardens; lose
 too much → it eases up).
@@ -635,12 +641,12 @@ flowchart TD
         F --> V["value logit"]
         F --> PL["policy logits"]
     end
-    subgraph POST["Processed after inference"]
+    subgraph POST["Processed after inference (all native C++)"]
         V --> S1["sigmoid → win probability"]
         PL --> S2["softmax / argmax → move ranking"]
         S1 --> S["C++ expectimax search<br/>over your predicted replies, node budget, depth"]
         S2 --> S
-        S --> TS["TS decision layer (difficulty)"]
+        S --> TS["C++ decision layer (difficulty)"]
         TS --> W["forced win / block"]
         TS --> D["deny your favourite cells (+DENY_WEIGHT × affinity)"]
         TS --> K["pick a lower, still-winning option<br/>from the inferred top-K (difficulty)"]
@@ -650,14 +656,16 @@ flowchart TD
     end
 ```
 
-- **C++ (inside the native call):** `sigmoid(value)` → win probability;
+- **C++ (the native AI session):** `sigmoid(value)` → win probability;
   `softmax/argmax(policy)` → move ranking and the opponent's likely replies; the
   expectimax search sums expected value over those replies within the node
-  budget.
-- **TS (after the native call):** forced win/block checks, the affinity **deny**
-  bias, the **defensive** bias (Easy), then the **difficulty selection** —
-  sampling a lower-ranked but viable move from the top-K — and applying the move
-  to the board.
+  budget. Then the decision layer — forced win/block checks, the affinity
+  **deny** bias, the **defensive** bias (Easy), the **difficulty selection**
+  (sampling a lower-ranked but viable move from the top-K) — and the chosen
+  move is returned to React, which only applies it to the render mirror.
+- **React (after the native call):** applies the returned move to the JS `Board`
+  (the visual/game-state mirror) and updates the snapshot; it no longer runs
+  any search or AI logic.
 
 ---
 
@@ -804,14 +812,14 @@ cpp/
   tools/check_parity.py     C++ vs PyTorch parity
   tests/parity.cpp          on-host parity test
 mobile-rn/
-  native/cpp/TfmEngine.cpp  JSI/TurboModule host functions
+  native/cpp/NativeAI.cpp  native AI session (search, difficulty, hint, memory, profiles)
+  native/cpp/TfmEngine.cpp JSI/TurboModule host functions (coarse ai* methods)
   native/include/tfm_model_data.h   embedded weights (C array)
   native/TfmEngineRegistration.mm   iOS global registrar (add to target)
   scripts/embed_weights.py          bin → C header
-  src/ai/engine.ts        normalization + eval seam
-  src/ai/mover.ts         lookahead search + difficulties
-  src/ai/predictor.ts     opponent modeling (persistent affinity)
-  src/three/              Blender-baked 3D geometry (assets → TS)
+  src/native/TfmEngine.ts   JS ↔ JSI wrapper (aiStart / aiChooseMove / …)
+  src/ai/                   reference implementation + Jest parity fixtures
+  src/three/                Blender-baked 3D geometry (assets → TS)
 ```
 
 ---

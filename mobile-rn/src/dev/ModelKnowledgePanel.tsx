@@ -26,6 +26,7 @@ import type { LookaheadMover } from '../ai/mover'
 import type { PerceptionProfile, PlayerProfile } from '../ai/profile'
 import type { GameStats } from '../ai/stats'
 import { buildKnowledgeSnapshot, type ModelKnowledgeSnapshot } from './knowledge'
+import type { NativeAIState } from '../native/TfmEngine'
 
 interface ModelKnowledgePanelProps {
   visible: boolean
@@ -40,6 +41,7 @@ interface ModelKnowledgePanelProps {
   perception: PerceptionProfile | null
   stats: GameStats
   adaptive: number
+  nativeState?: NativeAIState | null
 }
 
 /** lerp two hex colors; t=0 -> a, t=1 -> b */
@@ -57,7 +59,7 @@ const fmtPct = (v: number): string => `${Math.round(v * 100)}%`
 const fmtW = (v: number): string => (Number.isFinite(v) ? v.toFixed(2) : '0.00')
 
 export function ModelKnowledgePanel(props: ModelKnowledgePanelProps) {
-  const { visible, onClose, engine, board, humanSide, difficulty, predictor, mover, profile, perception, stats, adaptive } = props
+  const { visible, onClose, engine, board, humanSide, difficulty, predictor, mover, profile, perception, stats, adaptive, nativeState } = props
   const snap = useMemo<ModelKnowledgeSnapshot | null>(
     () =>
       buildKnowledgeSnapshot({
@@ -71,8 +73,9 @@ export function ModelKnowledgePanel(props: ModelKnowledgePanelProps) {
         perception,
         stats,
         adaptive,
+        nativeState,
       }),
-    [engine, board, humanSide, difficulty, predictor, mover, profile, perception, stats, adaptive, visible],
+    [engine, board, humanSide, difficulty, predictor, mover, profile, perception, stats, adaptive, nativeState, visible],
   )
 
   const translateY = useRef(new Animated.Value(900)).current

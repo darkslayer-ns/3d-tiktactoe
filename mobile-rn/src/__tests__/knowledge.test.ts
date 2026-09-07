@@ -110,4 +110,33 @@ describe('buildKnowledgeSnapshot', () => {
     expect(snap.affinity).toEqual([])
     expect(snap.winRate).toBe(0.5)
   })
+
+  it('reads learned history and perception from the native AI state', () => {
+    const snap = buildKnowledgeSnapshot({
+      engine: null,
+      board: new Board(3),
+      humanSide: 1,
+      difficulty: 'medium',
+      predictor: null,
+      mover: null,
+      profile: null,
+      perception: null,
+      stats: emptyStats(),
+      adaptive: 0,
+      nativeState: {
+        affinity: [1, 12, 2, 1, 5, 1],
+        profile: [2, 0.5, 1],
+        perception: [0, 0, 3],
+        stats: [4, 2, 1],
+        adaptive: -0.2,
+        aggression: 0.6,
+      },
+    })
+
+    expect(snap.affinity[0]).toEqual({ index: 12, weight: 2 })
+    expect(snap.aggression).toBe(0.6)
+    expect(snap.perception).toBe(1)
+    expect(snap.stats).toEqual({ wins: 4, losses: 2, draws: 1 })
+    expect(snap.adaptive).toBe(-0.2)
+  })
 })

@@ -11,6 +11,7 @@ export default defineConfig({
     alias: {
       'react-native': 'react-native-web',
       '@react-three/fiber/native': '@react-three/fiber',
+      'react-native-safe-area-context': path.resolve(__dirname, 'src/safeAreaShim.tsx'),
       'react-native-gesture-handler': path.resolve(__dirname, 'src/gestureShim.tsx'),
       '@react-native-async-storage/async-storage': path.resolve(
         __dirname,

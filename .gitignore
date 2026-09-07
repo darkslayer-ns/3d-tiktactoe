@@ -36,6 +36,7 @@ a
 !mobile-rn/assets/models/podium_wear.png
 !mobile-rn/assets/models/podium_win_*.png
 !mobile-rn/assets/models/podium_celebration_*.png
+!mobile-rn/screenshots/*.png
 ml_checkpoint.pt
 model_3_base.onnx
 model_universal/

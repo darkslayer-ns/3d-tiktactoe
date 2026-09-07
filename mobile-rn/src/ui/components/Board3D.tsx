@@ -42,6 +42,13 @@ const EXPLODE = 0.4
 /** Side length of each cell's invisible hit box. */
 const HIT_SIZE = 0.918
 
+/**
+ * Perspective shrink for billboarded marks: how much a mark at the far corner
+ * shrinks versus the nearest (0 = all same size, no depth feel). Real
+ * foreshortening — far marks read smaller — so the cube feels 3D.
+ */
+const PERSP_SCALE = 0.3
+
 /** Camera orbit limits (web OrbitControls used 3..14). */
 const MIN_DISTANCE = 4
 const MAX_DISTANCE = 40
@@ -402,7 +409,7 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
         dir.set(camPos.x - px, camPos.y - py, camPos.z - pz).normalize()
         q.setFromUnitVectors(zAxis, dir)
 
-        const scM = sc * markScale
+        const scM = sc * markScale * (1 - PERSP_SCALE * depthT)
         m.compose(v.set(px, py, pz), q, s.set(scM, scM, scM))
         mark.setMatrixAt(i, m)
         m.compose(v.set(px, py, pz), q, s.set(scM * 1.07, scM * 1.07, scM * 1.07))

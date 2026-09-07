@@ -361,7 +361,7 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
       const lightDist = lightPos.distanceTo(v.set(px, py, pz))
       const lightLen = lightPos.length() || 1
       const lightT = clamp((lightDist - (lightLen - half)) / Math.max(0.01, 2 * half), 0, 1)
-      const lightFalloff = 1 - 0.28 * lightT
+      const lightFalloff = 1 - 0.35 * lightT
 
       // ---- slot frame (empty cells only) ----
       if (!filled) {

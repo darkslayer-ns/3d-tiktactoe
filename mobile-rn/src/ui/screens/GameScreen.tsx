@@ -17,6 +17,7 @@ import { Theme, fontSize, radius, spacing } from '../theme'
 import { Board3D, axisCross } from '../components/Board3D'
 import { MenuSheet } from '../components/MenuSheet'
 import { StatusBar } from '../components/StatusBar'
+import { TurnFidget } from '../components/TurnFidget'
 import { WelcomeOverlay } from '../components/WelcomeOverlay'
 import { GameOverOverlay } from '../components/GameOverOverlay'
 import { EMPTY, P1, P2, type Cell } from '../../game/types'
@@ -693,6 +694,12 @@ const showHowTo = useCallback(
         )}
       </View>
 
+      {!snap.demo && !snap.over && (
+        <View style={styles.turnFidget} pointerEvents="none">
+          <TurnFidget mark={snap.currentPlayer === P1 ? 'X' : 'O'} testID="turn-fidget" />
+        </View>
+      )}
+
       {!snap.demo && (
         <View style={[styles.bottom, { paddingBottom: insets.bottom }]}>
           <StatusBar
@@ -806,6 +813,13 @@ const styles = StyleSheet.create({
     fontSize: fontSize(11),
     fontWeight: '800',
     letterSpacing: 1,
+  },
+  turnFidget: {
+    position: 'absolute',
+    top: spacing(2),
+    left: 0,
+    right: 0,
+    alignItems: 'center',
   },
   bottom: {
     // StatusBar draws its own top border.

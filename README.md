@@ -820,6 +820,7 @@ mobile-rn/
   src/native/TfmEngine.ts   JS ↔ JSI wrapper (aiStart / aiChooseMove / …)
   src/ai/                   reference implementation + Jest parity fixtures
   src/three/                Blender-baked 3D geometry (assets → TS)
+  assets/sprites/           Blender-rendered 60fps turn-mascot sprite sheets (TurnFidget)
 ```
 
 ---

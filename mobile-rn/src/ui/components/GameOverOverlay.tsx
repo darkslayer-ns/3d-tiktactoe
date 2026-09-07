@@ -62,7 +62,7 @@ export function GameOverOverlay({ winner, humanSide, onPlayAgain, onMenu }: Game
       >
         <Image
           source={icon}
-          style={styles.icon}
+          style={isDraw ? styles.icon : styles.winnerIcon}
           resizeMode="contain"
         />
         <Animated.Text
@@ -114,6 +114,11 @@ const styles = StyleSheet.create({
   icon: {
     width: 116,
     height: 116,
+    marginBottom: spacing(2),
+  },
+  winnerIcon: {
+    width: 160,
+    height: 160,
     marginBottom: spacing(2),
   },
   title: {

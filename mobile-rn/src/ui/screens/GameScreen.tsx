@@ -682,7 +682,7 @@ const showHowTo = useCallback(
         )}
       </View>
 
-      {!snap.demo && (
+      {!snap.demo && !menuVisible && (
         <View style={[styles.topBar, { top: insets.top + spacing(2) }]} pointerEvents="box-none">
           <View style={styles.turnSlot} pointerEvents="none">
             {!snap.over && snap.currentPlayer === config.humanSide && (
@@ -707,7 +707,7 @@ const showHowTo = useCallback(
         </View>
       )}
 
-      {!snap.demo && (
+      {!snap.demo && !menuVisible && (
         <View style={[styles.bottomBar, { paddingBottom: insets.bottom }]}>
           <View style={styles.bottomActions}>
             {!snap.over && snap.currentPlayer === config.humanSide && (

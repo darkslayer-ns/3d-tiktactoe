@@ -10,6 +10,7 @@ import { Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native
 import { BlurView } from 'expo-blur'
 import { Theme, fontSize, radius, spacing } from '../theme'
 import { EMPTY, P1, type Cell } from '../../game/types'
+import { WinnerCelebration } from './WinnerCelebration'
 
 interface GameOverOverlayProps {
   winner: Cell
@@ -38,12 +39,6 @@ export function GameOverOverlay({ winner, humanSide, onPlayAgain, onMenu }: Game
   const isWin = !isDraw && winner === humanSide
   const accent = isDraw ? Theme.purple : isWin ? Theme.cyan : Theme.pink
   const title = isDraw ? 'DRAW' : isWin ? 'YOU WIN!' : 'ISOCUBE WINS'
-  const icon = isDraw
-    ? require('../../../assets/models/trophy.png')
-    : winner === P1
-      ? require('../../../assets/models/podium_win_x.png')
-      : require('../../../assets/models/podium_win_o.png')
-
   const glowOpacity = glow.interpolate({ inputRange: [0, 1], outputRange: [0.45, 1] })
 
   return (
@@ -60,11 +55,15 @@ export function GameOverOverlay({ winner, humanSide, onPlayAgain, onMenu }: Game
           },
         ]}
       >
-        <Image
-          source={icon}
-          style={isDraw ? styles.icon : styles.winnerIcon}
-          resizeMode="contain"
-        />
+        {isDraw ? (
+          <Image
+            source={require('../../../assets/models/trophy.png')}
+            style={styles.icon}
+            resizeMode="contain"
+          />
+        ) : (
+          <WinnerCelebration mark={winner === P1 ? 'X' : 'O'} size={160} />
+        )}
         <Animated.Text
           style={[styles.title, { color: accent, textShadowColor: accent, opacity: glowOpacity }]}
         >
@@ -114,11 +113,6 @@ const styles = StyleSheet.create({
   icon: {
     width: 116,
     height: 116,
-    marginBottom: spacing(2),
-  },
-  winnerIcon: {
-    width: 160,
-    height: 160,
     marginBottom: spacing(2),
   },
   title: {

@@ -42,6 +42,14 @@ const EXPLODE = 0.4
 /** Side length of each cell's invisible hit box. */
 const HIT_SIZE = 0.918
 
+/**
+ * How far each mark tilts toward the camera (0 = stays in the board plane,
+ * 1 = fully camera-facing card). A partial value keeps large cubes readable —
+ * a full billboard on dense boards collapses every X/O into a wall of
+ * overlapping camera-facing cards.
+ */
+const BILLBOARD = 0.55
+
 /** Camera orbit limits (web OrbitControls used 3..14). */
 const MIN_DISTANCE = 4
 const MAX_DISTANCE = 40
@@ -276,6 +284,7 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
   const q = useMemo(() => new THREE.Quaternion(), [])
   const v = useMemo(() => new THREE.Vector3(), [])
   const dir = useMemo(() => new THREE.Vector3(), [])
+  const qFull = useMemo(() => new THREE.Quaternion(), [])
   const s = useMemo(() => new THREE.Vector3(), [])
   const c = useMemo(() => new THREE.Color(), [])
   const zAxis = useMemo(() => new THREE.Vector3(0, 0, 1), [])
@@ -384,10 +393,12 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
         const t = bt >= 0 ? Math.min(1, (now - bt) / 0.42) : 1
         const sc = t >= 1 ? 1 : Math.max(0.001, easeOutBack(t))
 
-        // billboard: point the mark's flat front (+Z) at the camera so the
-        // X/O card reads face-on from any orbit angle
+        // partial billboard: tilt the mark's flat front (+Z) toward the camera
+        // but keep most of its in-cube orientation — a full camera-facing card
+        // makes dense large boards collapse into a wall of overlapping cards.
         dir.set(camPos.x - px, camPos.y - py, camPos.z - pz).normalize()
-        q.setFromUnitVectors(zAxis, dir)
+        qFull.setFromUnitVectors(zAxis, dir)
+        q.identity().slerp(qFull, BILLBOARD)
 
         m.compose(v.set(px, py, pz), q, s.set(sc, sc, sc))
         mark.setMatrixAt(i, m)

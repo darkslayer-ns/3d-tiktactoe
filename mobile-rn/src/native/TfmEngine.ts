@@ -50,6 +50,7 @@ interface TfmEngineNative {
   aiHint: (player: number) => Promise<number>
   aiEndGame: (winner: number) => NativeAIState
   aiState: () => NativeAIState
+  aiKnowledge: (humanSide: number) => NativeAIKnowledge
 }
 
 export interface NativeAIConfig {
@@ -71,6 +72,13 @@ export interface NativeAIState {
   stats: number[]
   adaptive: number
   aggression: number
+}
+
+export interface NativeAIKnowledge extends NativeAIState {
+  winProbHuman: number
+  winProbAi: number
+  bestMoveIndex: number
+  predictions: Array<{ index: number; prob: number }>
 }
 
 export interface NativeAIDecision {
@@ -249,4 +257,15 @@ export function aiState(): NativeAIState {
   const N = native()
   if (!N) return { affinity: [], profile: [], perception: [], stats: [], adaptive: 0, aggression: 0 }
   return N.aiState()
+}
+
+export function aiKnowledge(humanSide: number): NativeAIKnowledge {
+  const N = native()
+  if (!N) {
+    return {
+      affinity: [], profile: [], perception: [], stats: [], adaptive: 0, aggression: 0,
+      winProbHuman: 0.5, winProbAi: 0.5, bestMoveIndex: -1, predictions: [],
+    }
+  }
+  return N.aiKnowledge(humanSide)
 }

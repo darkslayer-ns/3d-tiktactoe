@@ -34,6 +34,7 @@ enum class TfmMethod {
   AiHint,
   AiEndGame,
   AiState,
+  AiKnowledge,
 };
 
 // Installs `globalThis.__TfmEngine`, a jsi::HostObject exposing the host
@@ -132,6 +133,11 @@ class TfmEngineTurboModule
       const facebook::jsi::Value* args,
       size_t count);
   static facebook::jsi::Value aiStateHost(
+      facebook::jsi::Runtime& rt,
+      facebook::react::TurboModule& module,
+      const facebook::jsi::Value* args,
+      size_t count);
+  static facebook::jsi::Value aiKnowledgeHost(
       facebook::jsi::Runtime& rt,
       facebook::react::TurboModule& module,
       const facebook::jsi::Value* args,

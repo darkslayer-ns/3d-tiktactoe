@@ -14,7 +14,7 @@ import type { LookaheadMover } from '../ai/mover'
 import type { PerceptionProfile, PlayerProfile } from '../ai/profile'
 import type { GameStats } from '../ai/stats'
 import { argmax, sigmoid } from '../ai/math'
-import type { NativeAIState } from '../native/TfmEngine'
+import type { NativeAIKnowledge } from '../native/TfmEngine'
 
 export interface PredictionRow {
   index: number
@@ -61,7 +61,7 @@ export interface KnowledgeInput {
   perception: PerceptionProfile | null
   stats: GameStats
   adaptive: number
-  nativeState?: NativeAIState | null
+  nativeState?: NativeAIKnowledge | null
 }
 
 const PERCEPTION_BARS: Array<[string, keyof Pick<PerceptionProfile, 'axis' | 'face' | 'space'>]> = [
@@ -80,8 +80,14 @@ export function buildKnowledgeSnapshot(input: KnowledgeInput): ModelKnowledgeSna
   let winProbHuman: number | null = null
   let winProbAi: number | null = null
   let bestMoveIndex: number | null = null
+  let predictions: PredictionRow[] = []
 
-  if (engine && board) {
+  if (nativeState) {
+    winProbHuman = nativeState.winProbHuman
+    winProbAi = nativeState.winProbAi
+    bestMoveIndex = nativeState.bestMoveIndex >= 0 ? nativeState.bestMoveIndex : null
+    predictions = nativeState.predictions
+  } else if (engine && board) {
     try {
       const humanEval = engine.evalPosition(board.cells, humanSide)
       winProbHuman = sigmoid(humanEval.value)
@@ -105,8 +111,7 @@ export function buildKnowledgeSnapshot(input: KnowledgeInput): ModelKnowledgeSna
     }
   }
 
-  let predictions: PredictionRow[] = []
-  if (predictor && predictor.model && board) {
+  if (!nativeState && predictor && predictor.model && board) {
     try {
       const topK = Math.min(64, board.emptyCount())
       const dist = predictor.predictDistribution(humanSide, 1.0, topK, board)

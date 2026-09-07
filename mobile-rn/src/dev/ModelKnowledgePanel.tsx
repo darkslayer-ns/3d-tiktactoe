@@ -26,7 +26,7 @@ import type { LookaheadMover } from '../ai/mover'
 import type { PerceptionProfile, PlayerProfile } from '../ai/profile'
 import type { GameStats } from '../ai/stats'
 import { buildKnowledgeSnapshot, type ModelKnowledgeSnapshot } from './knowledge'
-import type { NativeAIState } from '../native/TfmEngine'
+import type { NativeAIKnowledge } from '../native/TfmEngine'
 
 interface ModelKnowledgePanelProps {
   visible: boolean
@@ -41,7 +41,7 @@ interface ModelKnowledgePanelProps {
   perception: PerceptionProfile | null
   stats: GameStats
   adaptive: number
-  nativeState?: NativeAIState | null
+  nativeState?: NativeAIKnowledge | null
 }
 
 /** lerp two hex colors; t=0 -> a, t=1 -> b */

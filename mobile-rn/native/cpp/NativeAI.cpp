@@ -387,4 +387,63 @@ NativeAIState NativeAI::state() const {
   return out;
 }
 
+NativeAIKnowledge NativeAI::knowledge(int humanSide) const {
+  NativeAIKnowledge out;
+  const NativeAIState base = state();
+  out.affinity = base.affinity;
+  out.profile = base.profile;
+  out.perception = base.perception;
+  out.stats = base.stats;
+  out.adaptive = base.adaptive;
+  out.aggression = base.aggression;
+
+  const int human = humanSide == 2 ? 2 : 1;
+  const int ai = other(human);
+  tfm::ModelSearchEngine engine(model_);
+  double humanLogit = 0.0;
+  double aiLogit = 0.0;
+  std::vector<float> humanPolicy;
+  std::vector<float> aiPolicy;
+  engine.evalPosition(cells_, human, humanLogit, humanPolicy);
+  engine.evalPosition(cells_, ai, aiLogit, aiPolicy);
+  out.winProbHuman = sigmoid(humanLogit);
+  out.winProbAi = sigmoid(aiLogit);
+  float bestPolicy = -std::numeric_limits<float>::infinity();
+  for (int i = 0; i < static_cast<int>(cells_.size()); ++i) {
+    if (cells_[static_cast<size_t>(i)] == 0 && aiPolicy[static_cast<size_t>(i)] > bestPolicy) {
+      bestPolicy = aiPolicy[static_cast<size_t>(i)];
+      out.bestMoveIndex = i;
+    }
+  }
+
+  std::vector<std::pair<int, double>> scores;
+  double maxScore = -std::numeric_limits<double>::infinity();
+  const auto rowIt = affinity_.find(human);
+  for (int i = 0; i < static_cast<int>(cells_.size()); ++i) {
+    if (cells_[static_cast<size_t>(i)] != 0) continue;
+    auto work = cells_;
+    work[static_cast<size_t>(i)] = human;
+    double valueLogit = 0.0;
+    std::vector<float> policy;
+    engine.evalPosition(work, human, valueLogit, policy);
+    double score = sigmoid(valueLogit);
+    if (rowIt != affinity_.end()) {
+      auto affinityCell = rowIt->second.find(i);
+      if (affinityCell != rowIt->second.end()) score += affinityCell->second;
+    }
+    scores.push_back({i, score});
+    maxScore = std::max(maxScore, score);
+  }
+  double total = 0.0;
+  for (auto& score : scores) {
+    score.second = std::exp(score.second - maxScore);
+    total += score.second;
+  }
+  for (auto& score : scores) score.second /= std::max(total, 1e-12);
+  std::sort(scores.begin(), scores.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+  const size_t limit = std::min<size_t>(64, scores.size());
+  for (size_t i = 0; i < limit; ++i) out.predictions.push_back({scores[i].first, scores[i].second});
+  return out;
+}
+
 }  // namespace tfmengine

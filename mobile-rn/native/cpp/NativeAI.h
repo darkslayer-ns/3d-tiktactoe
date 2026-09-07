@@ -41,6 +41,18 @@ struct NativeAIState {
   double aggression = 0.0;
 };
 
+struct NativeAIPrediction {
+  int index = -1;
+  double probability = 0.0;
+};
+
+struct NativeAIKnowledge : NativeAIState {
+  double winProbHuman = 0.5;
+  double winProbAi = 0.5;
+  int bestMoveIndex = -1;
+  std::vector<NativeAIPrediction> predictions;
+};
+
 class NativeAI {
  public:
   explicit NativeAI(const tfm::Model& model);
@@ -52,6 +64,7 @@ class NativeAI {
   int hint(int player);
   NativeAIState endGame(int winner);
   NativeAIState state() const;
+  NativeAIKnowledge knowledge(int humanSide) const;
 
  private:
   struct Difficulty {

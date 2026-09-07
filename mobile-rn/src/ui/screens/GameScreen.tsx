@@ -21,7 +21,7 @@ import { WelcomeOverlay } from '../components/WelcomeOverlay'
 import { GameOverOverlay } from '../components/GameOverOverlay'
 import { EMPTY, P1, P2, type Cell } from '../../game/types'
 import { Board } from '../../game/board'
-import { isAvailable, aiApplyMove, aiChooseMove, aiEndGame, aiHint, aiSetBoard, aiStart, aiState, type NativeAIConfig, type NativeAIState } from '../../native/TfmEngine'
+import { isAvailable, aiApplyMove, aiChooseMove, aiEndGame, aiHint, aiKnowledge, aiSetBoard, aiStart, type NativeAIConfig, type NativeAIKnowledge, type NativeAIState } from '../../native/TfmEngine'
 import { type Affinity } from '../../ai/opponentMemory'
 import { loadAffinity, saveAffinity, getWelcomed, setWelcomed, loadProfile, saveProfile, loadStats, saveStats, loadPerception, savePerception } from '../../ai/opponentStorage'
 import type { ProfileCounts } from '../../ai/profile'
@@ -92,7 +92,7 @@ export function GameScreen() {
   const [roundKey, setRoundKey] = useState(0)
   const [resultVisible, setResultVisible] = useState(false)
   const [knowledgeVisible, setKnowledgeVisible] = useState(false)
-  const [nativeSnapshot, setNativeSnapshot] = useState<NativeAIState | null>(null)
+  const [nativeSnapshot, setNativeSnapshot] = useState<NativeAIKnowledge | null>(null)
 
   const engineRef = useRef<boolean>(false)
   const boardRef = useRef<Board | null>(null)
@@ -181,7 +181,7 @@ export function GameScreen() {
       const human = humanSideRef.current
       playSfx(winner === EMPTY ? 'draw' : winner === human ? 'win' : 'lose')
       const state = aiEndGame(winner)
-      setNativeSnapshot(state)
+      setNativeSnapshot(aiKnowledge(human))
       applyNativeState(state, affinityRef, profileRef, perceptionRef, statsRef)
       adaptiveRef.current = state.adaptive
       void saveStats(statsRef.current)
@@ -249,7 +249,7 @@ export function GameScreen() {
       thinkingRef.current = false
       board.apply(move, aiSide)
       aiApplyMove(aiSide, move)
-      setNativeSnapshot(aiState())
+      setNativeSnapshot(aiKnowledge(humanSideRef.current))
       playSfx('ai')
       movesRef.current.push(move)
       const outcome = board.outcome()
@@ -316,7 +316,7 @@ export function GameScreen() {
         }
         board.apply(move, side)
         aiApplyMove(side, move)
-        setNativeSnapshot(aiState())
+        setNativeSnapshot(aiKnowledge(humanSideRef.current))
         movesRef.current.push(move)
         const outcome = board.outcome()
         if (outcome.over) {
@@ -410,7 +410,7 @@ export function GameScreen() {
       const board = new Board(cfg.size)
       // Fresh native session — demos don't teach persistent memory.
       aiStart(nativeConfig(cfg, null, { attack: 0, defend: 0, neutral: 0 }, { axis: 0, face: 0, space: 0 }, emptyStats(), 0))
-      setNativeSnapshot(aiState())
+      setNativeSnapshot(aiKnowledge(cfg.humanSide))
       boardRef.current = board
       humanSideRef.current = cfg.humanSide
       configRef.current = cfg
@@ -443,7 +443,7 @@ export function GameScreen() {
       }
       const board = new Board(cfg.size)
       aiStart(nativeConfig(cfg, affinityRef.current, profileRef.current, perceptionRef.current, statsRef.current, cfg.difficulty === 'hard' ? 0 : adaptiveRef.current))
-      setNativeSnapshot(aiState())
+      setNativeSnapshot(aiKnowledge(cfg.humanSide))
       boardRef.current = board
       humanSideRef.current = cfg.humanSide
       configRef.current = cfg
@@ -517,7 +517,7 @@ export function GameScreen() {
     const human = humanSideRef.current
     board.apply(pending, human)
     aiApplyMove(human, pending)
-    setNativeSnapshot(aiState())
+    setNativeSnapshot(aiKnowledge(human))
     movesRef.current.push(pending)
     const outcome = board.outcome()
     setPending(null)
@@ -580,7 +580,7 @@ export function GameScreen() {
     for (const m of hist.slice(lastHuman)) board.cells[m] = EMPTY
     movesRef.current = hist.slice(0, lastHuman)
     aiSetBoard(board.cells)
-    setNativeSnapshot(aiState())
+    setNativeSnapshot(aiKnowledge(human))
     if (timerRef.current) clearTimeout(timerRef.current)
     overRef.current = false
     thinkingRef.current = false

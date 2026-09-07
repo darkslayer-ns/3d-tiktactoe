@@ -112,6 +112,23 @@ jsi::Value aiStateValue(jsi::Runtime& rt, const NativeAIState& state) {
   return out;
 }
 
+jsi::Value aiKnowledgeValue(jsi::Runtime& rt, const NativeAIKnowledge& knowledge) {
+  jsi::Value value = aiStateValue(rt, knowledge);
+  auto out = value.asObject(rt);
+  out.setProperty(rt, "winProbHuman", knowledge.winProbHuman);
+  out.setProperty(rt, "winProbAi", knowledge.winProbAi);
+  out.setProperty(rt, "bestMoveIndex", knowledge.bestMoveIndex);
+  jsi::Array predictions(rt, static_cast<int>(knowledge.predictions.size()));
+  for (size_t i = 0; i < knowledge.predictions.size(); ++i) {
+    jsi::Object row(rt);
+    row.setProperty(rt, "index", knowledge.predictions[i].index);
+    row.setProperty(rt, "prob", knowledge.predictions[i].probability);
+    predictions.setValueAtIndex(rt, static_cast<int>(i), row);
+  }
+  out.setProperty(rt, "predictions", predictions);
+  return out;
+}
+
 jsi::Value aiResultValue(jsi::Runtime& rt, const NativeAIResult& result) {
   jsi::Object out(rt);
   out.setProperty(rt, "move", result.move);
@@ -189,6 +206,13 @@ jsi::Value hostAiState(jsi::Runtime& rt, EngineState& st) {
   std::lock_guard<std::mutex> lock(st.aiMu);
   if (!st.ai) return jsi::Object(rt);
   return aiStateValue(rt, st.ai->state());
+}
+
+jsi::Value hostAiKnowledge(jsi::Runtime& rt, EngineState& st,
+                           const jsi::Value& humanValue) {
+  std::lock_guard<std::mutex> lock(st.aiMu);
+  if (!st.ai) throw jsi::JSError(rt, "TfmEngine aiKnowledge: AI session not started");
+  return aiKnowledgeValue(rt, st.ai->knowledge(static_cast<int>(humanValue.asNumber())));
 }
 
 jsi::Value hostAiEndGame(jsi::Runtime& rt, EngineState& st,
@@ -623,6 +647,7 @@ constexpr MethodEntry kMethodTable[] = {
     {TfmMethod::AiHint, "aiHint"},
     {TfmMethod::AiEndGame, "aiEndGame"},
     {TfmMethod::AiState, "aiState"},
+    {TfmMethod::AiKnowledge, "aiKnowledge"},
 };
 constexpr size_t kMethodCount = sizeof(kMethodTable) / sizeof(kMethodTable[0]);
 
@@ -720,6 +745,10 @@ class TfmEngineHostObject : public jsi::HostObject {
         return makeHostFunction(rt, name, 0, [state](jsi::Runtime& r, const jsi::Value*, size_t) {
           return hostAiState(r, *state);
         });
+      case TfmMethod::AiKnowledge:
+        return makeHostFunction(rt, name, 1, [state](jsi::Runtime& r, const jsi::Value* args, size_t) {
+          return hostAiKnowledge(r, *state, args[0]);
+        });
       case TfmMethod::Unknown:
       default:
         return jsi::Value::undefined();
@@ -785,6 +814,8 @@ TfmEngineTurboModule::TfmEngineTurboModule(
       1, &TfmEngineTurboModule::aiEndGameHost};
   methodMap_["aiState"] = react::TurboModule::MethodMetadata{
       0, &TfmEngineTurboModule::aiStateHost};
+  methodMap_["aiKnowledge"] = react::TurboModule::MethodMetadata{
+      1, &TfmEngineTurboModule::aiKnowledgeHost};
 }
 
 TfmEngineTurboModule::~TfmEngineTurboModule() {
@@ -884,6 +915,13 @@ jsi::Value TfmEngineTurboModule::aiStateHost(
     jsi::Runtime& rt, react::TurboModule& module, const jsi::Value*, size_t) {
   auto& self = static_cast<TfmEngineTurboModule&>(module);
   return hostAiState(rt, *self.state_);
+}
+
+jsi::Value TfmEngineTurboModule::aiKnowledgeHost(
+    jsi::Runtime& rt, react::TurboModule& module, const jsi::Value* args,
+    size_t) {
+  auto& self = static_cast<TfmEngineTurboModule&>(module);
+  return hostAiKnowledge(rt, *self.state_, args[0]);
 }
 
 }  // namespace tfmengine

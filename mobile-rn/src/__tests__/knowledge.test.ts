@@ -130,6 +130,10 @@ describe('buildKnowledgeSnapshot', () => {
         stats: [4, 2, 1],
         adaptive: -0.2,
         aggression: 0.6,
+        winProbHuman: 0.73,
+        winProbAi: 0.27,
+        bestMoveIndex: 26,
+        predictions: [{ index: 12, prob: 0.4 }],
       },
     })
 

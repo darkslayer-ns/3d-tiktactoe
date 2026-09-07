@@ -276,6 +276,7 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
   const q = useMemo(() => new THREE.Quaternion(), [])
   const v = useMemo(() => new THREE.Vector3(), [])
   const dir = useMemo(() => new THREE.Vector3(), [])
+  const lightPos = useMemo(() => new THREE.Vector3(6, 10, 4), [])
   const s = useMemo(() => new THREE.Vector3(), [])
   const c = useMemo(() => new THREE.Color(), [])
   const zAxis = useMemo(() => new THREE.Vector3(0, 0, 1), [])
@@ -355,6 +356,13 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
       const depthT = clamp((depth - (camDist - half)) / Math.max(0.01, 2 * half), 0, 1)
       const fade = 1 - 0.88 * depthT
 
+      // Light falloff: marks subtly darken the farther they sit from the key
+      // light (same idea as the slots' depth fade, but light-based).
+      const lightDist = lightPos.distanceTo(v.set(px, py, pz))
+      const lightLen = lightPos.length() || 1
+      const lightT = clamp((lightDist - (lightLen - half)) / Math.max(0.01, 2 * half), 0, 1)
+      const lightFalloff = 1 - 0.28 * lightT
+
       // ---- slot frame (empty cells only) ----
       if (!filled) {
         let bright
@@ -403,20 +411,20 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
         // Body brightness (material color is saturated brand; instanceColor
         // modulates it): dim off-axis, brief flash on pop-in, gold-bright win.
         if (winner) {
-          c.setScalar(1.35 * fade)
+          c.setScalar(1.35 * fade * lightFalloff)
         } else {
           let mul = 1
           if (dim) mul = 0.4
           if (t < 1) mul *= 1 + 0.7 * (1 - t)
-          c.setScalar(mul * fade * loseDim)
+          c.setScalar(mul * fade * loseDim * lightFalloff)
         }
         mark.setColorAt(i, c)
 
         // Halo tint: brand color normally, pulsing gold on the winning line.
         if (winner) {
-          c.copy(cGold).multiplyScalar(0.7 + 0.5 * Math.sin(now * 7))
+          c.copy(cGold).multiplyScalar((0.7 + 0.5 * Math.sin(now * 7)) * lightFalloff)
         } else {
-          c.copy(haloBrand)
+          c.copy(haloBrand).multiplyScalar(lightFalloff)
         }
         halo.setColorAt(i, c)
 

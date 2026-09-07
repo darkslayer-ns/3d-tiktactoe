@@ -42,14 +42,6 @@ const EXPLODE = 0.4
 /** Side length of each cell's invisible hit box. */
 const HIT_SIZE = 0.918
 
-/**
- * How far each mark tilts toward the camera (0 = stays in the board plane,
- * 1 = fully camera-facing card). A partial value keeps large cubes readable —
- * a full billboard on dense boards collapses every X/O into a wall of
- * overlapping camera-facing cards.
- */
-const BILLBOARD = 0.55
-
 /** Camera orbit limits (web OrbitControls used 3..14). */
 const MIN_DISTANCE = 4
 const MAX_DISTANCE = 40
@@ -284,7 +276,6 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
   const q = useMemo(() => new THREE.Quaternion(), [])
   const v = useMemo(() => new THREE.Vector3(), [])
   const dir = useMemo(() => new THREE.Vector3(), [])
-  const qFull = useMemo(() => new THREE.Quaternion(), [])
   const s = useMemo(() => new THREE.Vector3(), [])
   const c = useMemo(() => new THREE.Color(), [])
   const zAxis = useMemo(() => new THREE.Vector3(0, 0, 1), [])
@@ -323,6 +314,11 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
     }
     lastNow.current = now
 
+    // Marks are authored at a fixed size; shrink them slightly on bigger cubes
+    // so the denser lattice doesn't collapse into a wall of overlapping cards
+    // when they billboard toward the camera.
+    const markScale = size >= 6 ? 0.8 : size >= 5 ? 0.88 : size >= 4 ? 0.94 : 1
+
     const focusing = pending >= 0 && pending < count && cells[pending] === 0
     let ppx = -1
     let ppy = -1
@@ -357,7 +353,7 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
       // lattice clearly reads as 3D.
       const depth = camPos.distanceTo(v.set(px, py, pz))
       const depthT = clamp((depth - (camDist - half)) / Math.max(0.01, 2 * half), 0, 1)
-      const fade = 1 - 0.72 * depthT
+      const fade = 1 - 0.88 * depthT
 
       // ---- slot frame (empty cells only) ----
       if (!filled) {
@@ -393,16 +389,15 @@ function Instances({ size, gameRef, onPointerDown, handleClick }: InstancesProps
         const t = bt >= 0 ? Math.min(1, (now - bt) / 0.42) : 1
         const sc = t >= 1 ? 1 : Math.max(0.001, easeOutBack(t))
 
-        // partial billboard: tilt the mark's flat front (+Z) toward the camera
-        // but keep most of its in-cube orientation — a full camera-facing card
-        // makes dense large boards collapse into a wall of overlapping cards.
+        // full billboard: point the mark's flat front (+Z) at the camera so the
+        // X/O card reads face-on from any orbit angle
         dir.set(camPos.x - px, camPos.y - py, camPos.z - pz).normalize()
-        qFull.setFromUnitVectors(zAxis, dir)
-        q.identity().slerp(qFull, BILLBOARD)
+        q.setFromUnitVectors(zAxis, dir)
 
-        m.compose(v.set(px, py, pz), q, s.set(sc, sc, sc))
+        const scM = sc * markScale
+        m.compose(v.set(px, py, pz), q, s.set(scM, scM, scM))
         mark.setMatrixAt(i, m)
-        m.compose(v.set(px, py, pz), q, s.set(sc * 1.07, sc * 1.07, sc * 1.07))
+        m.compose(v.set(px, py, pz), q, s.set(scM * 1.07, scM * 1.07, scM * 1.07))
         halo.setMatrixAt(i, m)
 
         // Body brightness (material color is saturated brand; instanceColor

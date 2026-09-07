@@ -16,7 +16,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Theme, fontSize, radius, spacing } from '../theme'
 import { Board3D, axisCross } from '../components/Board3D'
 import { MenuSheet } from '../components/MenuSheet'
-import { StatusBar } from '../components/StatusBar'
 import { TurnFidget } from '../components/TurnFidget'
 import { WelcomeOverlay } from '../components/WelcomeOverlay'
 import { GameOverOverlay } from '../components/GameOverOverlay'
@@ -681,34 +680,40 @@ const showHowTo = useCallback(
             <Text style={styles.engineErrorText}>{engineError}</Text>
           </View>
         )}
-
-        {IS_INTERNAL_BUILD && (
-          <Pressable
-            onPress={() => setKnowledgeVisible(true)}
-            style={styles.debugBtn}
-            hitSlop={8}
-            testID="debug-model-knowledge"
-          >
-            <Text style={styles.debugBtnText}>AI</Text>
-          </Pressable>
-        )}
       </View>
 
-      {!snap.demo && !snap.over && (
-        <View style={styles.turnFidget} pointerEvents="none">
-          <TurnFidget mark={snap.currentPlayer === P1 ? 'X' : 'O'} testID="turn-fidget" />
-        </View>
-      )}
-
       {!snap.demo && (
-        <View style={[styles.bottom, { paddingBottom: insets.bottom }]}>
-          <StatusBar
-            state={snap}
-            humanSide={config.humanSide}
-            onPlayAgain={playAgain}
-            onHint={onHint}
-            onUndo={onUndo}
-          />
+        <View style={[styles.topBar, { top: insets.top + spacing(2) }]} pointerEvents="box-none">
+          <View style={styles.turnSlot} pointerEvents="none">
+            {!snap.over && snap.currentPlayer === config.humanSide && (
+              <TurnFidget mark={snap.currentPlayer === P1 ? 'X' : 'O'} size={44} testID="turn-fidget" />
+            )}
+          </View>
+          <View style={styles.actionsRow}>
+            {!snap.over && snap.currentPlayer === config.humanSide && (
+              <Pressable onPress={onHint} style={[styles.iconBtn, styles.iconBtnHint]} hitSlop={8} testID="hint-btn">
+                <Text style={styles.iconBtnHintText}>Hint</Text>
+              </Pressable>
+            )}
+            {!snap.thinking && snap.movesPlayed.length > 0 && (
+              <Pressable onPress={onUndo} style={styles.iconBtn} hitSlop={8} testID="undo-btn">
+                <Text style={styles.iconBtnText}>Undo</Text>
+              </Pressable>
+            )}
+            <Pressable onPress={openMenu} style={styles.iconBtn} hitSlop={8} testID="new-game-btn">
+              <Text style={styles.iconBtnText}>New game</Text>
+            </Pressable>
+            {IS_INTERNAL_BUILD && (
+              <Pressable
+                onPress={() => setKnowledgeVisible(true)}
+                style={styles.debugBtn}
+                hitSlop={8}
+                testID="debug-model-knowledge"
+              >
+                <Text style={styles.debugBtnText}>AI</Text>
+              </Pressable>
+            )}
+          </View>
         </View>
       )}
 
@@ -791,10 +796,52 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-  debugBtn: {
+  topBar: {
     position: 'absolute',
-    top: spacing(4),
+    left: spacing(4),
     right: spacing(4),
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  turnSlot: {
+    width: 64,
+    height: 52,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  actionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing(2),
+  },
+  iconBtn: {
+    paddingVertical: spacing(1.5),
+    paddingHorizontal: spacing(3),
+    borderRadius: radius(2),
+    borderWidth: 1,
+    borderColor: Theme.border,
+    backgroundColor: 'rgba(2, 6, 23, 0.85)',
+  },
+  iconBtnText: {
+    color: Theme.muted,
+    fontSize: fontSize(12),
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  iconBtnHint: {
+    borderColor: 'rgba(34, 211, 238, 0.45)',
+    backgroundColor: 'rgba(34, 211, 238, 0.1)',
+  },
+  iconBtnHintText: {
+    color: Theme.cyan,
+    fontSize: fontSize(12),
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  debugBtn: {
     width: 34,
     height: 34,
     borderRadius: 17,
@@ -813,16 +860,6 @@ const styles = StyleSheet.create({
     fontSize: fontSize(11),
     fontWeight: '800',
     letterSpacing: 1,
-  },
-  turnFidget: {
-    position: 'absolute',
-    top: spacing(2),
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-  },
-  bottom: {
-    // StatusBar draws its own top border.
   },
   actionBar: {
     position: 'absolute',

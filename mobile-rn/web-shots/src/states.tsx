@@ -141,17 +141,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   batteryFill: { width: 15, height: 8, borderRadius: 2, backgroundColor: '#ffffff' },
-  homeWrap: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 20,
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    paddingBottom: 8,
-  },
-  homePill: { width: 134, height: 5, borderRadius: 2.5, backgroundColor: 'rgba(255,255,255,0.85)' },
   // ---- game-over card ----
   overlay: {
     position: 'absolute',
@@ -248,14 +237,6 @@ function StatusBarChrome({ compact = false }: { compact?: boolean }) {
   )
 }
 
-function HomeIndicator() {
-  return (
-    <View style={styles.homeWrap} pointerEvents="none">
-      <View style={styles.homePill} />
-    </View>
-  )
-}
-
 function TurnIndicator({ mark }: { mark: 'X' | 'O' }) {
   const accent = mark === 'X' ? Theme.cyan : Theme.pink
   const sheet = mark === 'X' ? fidgetX : fidgetO
@@ -321,7 +302,6 @@ function Chrome({ children, compact = false }: { children: React.ReactNode; comp
     <View style={styles.frame}>
       {children}
       <StatusBarChrome compact={compact} />
-      <HomeIndicator />
     </View>
   )
 }

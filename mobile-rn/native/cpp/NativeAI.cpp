@@ -1,53 +1,84 @@
+/**
+ * NativeAI — the on-device game AI, held entirely in C++.
+ *
+ * One session owns a board (cells_), the difficulty knobs, the opponent
+ * affinity memory, the player style/perception profiles, the adaptive stats,
+ * and the move/hint search over the embedded transformer. React drives it
+ * through the coarse JSI calls in TfmEngine.cpp (aiStart / aiApplyMove /
+ * aiChooseMove / aiHint / aiEndGame / aiKnowledge), so no per-inference IPC
+ * crosses the bridge.
+ *
+ * The search semantics mirror the (now reference-only) TS LookaheadMover and
+ * the Python backend/ml/model_agent.py, so behavior stays value-identical.
+ */
+
 #include "NativeAI.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 
 namespace tfmengine {
 namespace {
 
-std::vector<std::vector<int>> buildLines(int n) {
-  std::vector<std::vector<int>> lines;
-  for (int dx = -1; dx <= 1; ++dx) {
-    for (int dy = -1; dy <= 1; ++dy) {
-      for (int dz = -1; dz <= 1; ++dz) {
-        if (dx == 0 && dy == 0 && dz == 0) continue;
-        if (!(dx > 0 || (dx == 0 && dy > 0) ||
-              (dx == 0 && dy == 0 && dz > 0))) continue;
-        for (int x = 0; x < n; ++x) {
-          for (int y = 0; y < n; ++y) {
-            for (int z = 0; z < n; ++z) {
-              const int ex = x + dx * (n - 1);
-              const int ey = y + dy * (n - 1);
-              const int ez = z + dz * (n - 1);
-              if (ex < 0 || ex >= n || ey < 0 || ey >= n || ez < 0 || ez >= n) continue;
-              std::vector<int> line;
-              for (int k = 0; k < n; ++k) {
-                const int px = x + dx * k;
-                const int py = y + dy * k;
-                const int pz = z + dz * k;
-                line.push_back(px + n * (py + n * pz));
+// Winning-line table, computed at COMPILE TIME for every supported board size
+// (3..6). There is no runtime line construction: the compiler evaluates
+// buildLineTables() into a `constexpr` constant baked into the binary, and the
+// AI just indexes it by size.
+//
+// Geometry: for every primitive direction vector (no zero vector, only one of
+// each opposite pair) a line starts at each cell whose `n-1` walk stays in
+// bounds, yielding each length-n line exactly once — (3n² + 6n + 4) lines.
+constexpr int kMaxSize = 6;
+constexpr int kMaxLines = 3 * kMaxSize * kMaxSize + 6 * kMaxSize + 4;  // 148
+
+struct LineTables {
+  // line[size][li][k] = k-th cell of line `li` on a `size³` board;
+  // cells past the end of a shorter line are -1 (sentinel).
+  std::array<std::array<int, kMaxSize>, kMaxLines> line[7]{};
+  std::array<int, 7> count{};  // number of real lines per size
+};
+
+constexpr LineTables buildLineTables() {
+  LineTables t{};
+  for (int n = 3; n <= 6; ++n) {
+    int li = 0;
+    for (int dx = -1; dx <= 1; ++dx) {
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dz = -1; dz <= 1; ++dz) {
+          if (dx == 0 && dy == 0 && dz == 0) continue;
+          if (!(dx > 0 || (dx == 0 && dy > 0) ||
+                (dx == 0 && dy == 0 && dz > 0))) continue;
+          for (int x = 0; x < n; ++x) {
+            for (int y = 0; y < n; ++y) {
+              for (int z = 0; z < n; ++z) {
+                const int ex = x + dx * (n - 1);
+                const int ey = y + dy * (n - 1);
+                const int ez = z + dz * (n - 1);
+                if (ex < 0 || ex >= n || ey < 0 || ey >= n || ez < 0 || ez >= n) continue;
+                for (int k = 0; k < n; ++k) {
+                  t.line[n][li][k] = (x + dx * k) + n * ((y + dy * k) + n * (z + dz * k));
+                }
+                for (int k = n; k < kMaxSize; ++k) t.line[n][li][k] = -1;
+                ++li;
               }
-              lines.push_back(std::move(line));
             }
           }
         }
       }
     }
+    t.count[n] = li;
   }
-  return lines;
+  return t;
 }
 
-const std::vector<std::vector<int>>& linesFor(int n) {
-  static std::map<int, std::vector<std::vector<int>>> cache;
-  auto it = cache.find(n);
-  if (it != cache.end()) return it->second;
-  return cache.emplace(n, buildLines(n)).first->second;
-}
+constexpr LineTables kLines = buildLineTables();
 
+// The other player (1 <-> 2).
 int other(int side) { return side == 1 ? 2 : 1; }
 
+// Numerically-stable sigmoid (mirrors cpp_inference.sigmoid).
 double sigmoid(double x) {
   if (x >= 0.0) {
     const double z = std::exp(-x);
@@ -61,6 +92,10 @@ double sigmoid(double x) {
 
 NativeAI::NativeAI(const tfm::Model& model) : model_(model) {}
 
+// Begin a new game from the JS config: board size, sides, difficulty, and the
+// persisted learning state (affinity / profiles / stats) that survives across
+// restarts. Applies the per-game recency fade to affinity (× 0.9) so recent
+// sessions count more than old ones.
 void NativeAI::start(const NativeAIConfig& config) {
   n_ = std::max(3, std::min(6, config.n));
   humanSide_ = config.humanSide == 2 ? 2 : 1;
@@ -87,10 +122,16 @@ void NativeAI::start(const NativeAIConfig& config) {
   wrongMovesUsed_ = 0;
 }
 
+// Replace the board with an externally-built one (undo/replay sync from JS).
+// Size must match the session's n, or the update is ignored.
 void NativeAI::setBoard(const std::vector<int>& cells) {
   if (cells.size() == static_cast<size_t>(n_ * n_ * n_)) cells_ = cells;
 }
 
+// Difficulty is a hand-tuned table of runtime knobs over the SAME weights —
+// it is never a different model. Fields (in struct order): depth, topK,
+// maxNodes, entryTemp, entryMoves, wrongMoveBudget, mistakeRate, moveTemp,
+// randomBlunder (Easy), suboptimalBlunder (Medium), defensive (Easy).
 NativeAI::Difficulty NativeAI::difficulty() const {
   if (difficultyName_ == "easy") {
     return {1, 3, 220, 1.0, 3, 6, 0.25, 1.1, true, false, 1.0};
@@ -102,12 +143,14 @@ NativeAI::Difficulty NativeAI::difficulty() const {
 }
 
 int NativeAI::winner(const std::vector<int>& cells) const {
-  for (const auto& line : linesFor(n_)) {
+  // A line wins when all n cells hold the same non-empty side.
+  for (int li = 0; li < kLines.count[n_]; ++li) {
+    const auto& line = kLines.line[n_][li];
     const int first = cells[static_cast<size_t>(line[0])];
     if (first == 0) continue;
     bool all = true;
-    for (int idx : line) {
-      if (cells[static_cast<size_t>(idx)] != first) {
+    for (int k = 1; k < n_; ++k) {
+      if (cells[static_cast<size_t>(line[k])] != first) {
         all = false;
         break;
       }
@@ -117,6 +160,8 @@ int NativeAI::winner(const std::vector<int>& cells) const {
   return 0;
 }
 
+// Would `side` win by playing `cell`? Trial-places and undoes — exact,
+// model-free (used for the forced win/block checks and threat detection).
 bool NativeAI::wouldWin(std::vector<int>& cells, int side, int cell) const {
   if (cell < 0 || cell >= static_cast<int>(cells.size()) || cells[static_cast<size_t>(cell)] != 0) return false;
   cells[static_cast<size_t>(cell)] = side;
@@ -125,6 +170,8 @@ bool NativeAI::wouldWin(std::vector<int>& cells, int side, int cell) const {
   return won;
 }
 
+// Every empty cell where `side` would win right now. Two distinct winning
+// cells = an unblockable fork.
 std::vector<int> NativeAI::winningCells(const std::vector<int>& cells, int side) const {
   std::vector<int> out;
   std::vector<int> work = cells;
@@ -134,6 +181,7 @@ std::vector<int> NativeAI::winningCells(const std::vector<int>& cells, int side)
   return out;
 }
 
+// Model win-probability (sigmoid of the value logit) for `side` to move.
 double NativeAI::valueFor(const std::vector<int>& cells, int side) const {
   tfm::ModelSearchEngine engine(model_);
   double value = 0.0;
@@ -142,6 +190,7 @@ double NativeAI::valueFor(const std::vector<int>& cells, int side) const {
   return sigmoid(value);
 }
 
+// The model's own preferred move for `side` (argmax over the masked policy).
 int NativeAI::greedy(const std::vector<int>& cells, int side) const {
   tfm::ModelSearchEngine engine(model_);
   double value = 0.0;
@@ -158,6 +207,12 @@ int NativeAI::greedy(const std::vector<int>& cells, int side) const {
   return best;
 }
 
+// Prefill + re-infer playout (the Hint's rollout). Returns the win-prob for
+// `human` from the position where `toMove` plays next. Exact tactics are
+// forced at every ply — the mover takes a win, answers a one-move threat — and
+// otherwise the model's own pick plays, recursing up to `pliesLeft` half-moves
+// before falling back to the model value. This is what makes a hint "see" the
+// AI's reply instead of just picking a static best move.
 double NativeAI::rollout(std::vector<int>& cells, int toMove, int human, int pliesLeft) const {
   const int w = winner(cells);
   if (w != 0) return w == human ? 1.0 : 0.0;
@@ -187,21 +242,33 @@ double NativeAI::rollout(std::vector<int>& cells, int toMove, int human, int pli
   return v;
 }
 
+// Remember that `player` played `cell` — the opponent-memory heatmap that
+// later drives the deny-bias and reply prediction.
 void NativeAI::recordAffinity(int player, int cell) {
   affinity_[player][cell] += 1.0;
 }
 
+// Classify the human's latest move and update the decaying profiles:
+// attack/defend/neutral tallies (→ aggression) and axis/face/space tallies
+// (→ 3D perception). Only the human side is profiled.
 void NativeAI::recordProfile(int player, int cell) {
   if (player != humanSide_) return;
   const int opp = other(player);
   perceptionAxis_ *= 0.95;
   perceptionFace_ *= 0.95;
   perceptionSpace_ *= 0.95;
+  // Credit the axis class (axis / face / space diagonal) of the line `cell`
+  // engages — how deep into the cube the player sees.
   auto creditAxis = [&](const std::vector<int>& board, int side) {
-    for (const auto& line : linesFor(n_)) {
-      if (std::find(line.begin(), line.end(), cell) == line.end()) continue;
+    for (int li = 0; li < kLines.count[n_]; ++li) {
+      const auto& line = kLines.line[n_][li];
+      bool contains = false;
+      for (int k = 0; k < n_; ++k) {
+        if (line[k] == cell) { contains = true; break; }
+      }
+      if (!contains) continue;
       int count = 0;
-      for (int index : line) if (board[static_cast<size_t>(index)] == side) ++count;
+      for (int k = 0; k < n_; ++k) if (board[static_cast<size_t>(line[k])] == side) ++count;
       if (count < n_ - 1) continue;
       const int dx = std::abs((line[1] % n_) - (line[0] % n_));
       const int dy = std::abs(((line[1] / n_) % n_) - ((line[0] / n_) % n_));
@@ -229,6 +296,7 @@ void NativeAI::recordProfile(int player, int cell) {
   } else neutral_ += 1.0;
 }
 
+// Record the profiles for a played move, then commit it to the board.
 void NativeAI::applyMove(int player, int cell) {
   if (cell < 0 || cell >= static_cast<int>(cells_.size()) || cells_[static_cast<size_t>(cell)] != 0) return;
   recordProfile(player, cell);
@@ -236,6 +304,8 @@ void NativeAI::applyMove(int player, int cell) {
   cells_[static_cast<size_t>(cell)] = player;
 }
 
+// A deliberate-mistake move: for Medium, a good-but-not-best ranked move; for
+// Easy, any other legal move. Never the winning move itself.
 int NativeAI::pickBlunder(const std::vector<tfm::ScoredMove>& scored, int best,
                           const std::vector<int>& moves) {
   if (scored.size() > 1) {
@@ -250,6 +320,13 @@ int NativeAI::pickBlunder(const std::vector<tfm::ScoredMove>& scored, int best,
   return others[static_cast<size_t>(dist(rng_))];
 }
 
+// Pick the AI's move. Order of preference, matching the old LookaheadMover:
+//   1. take an exact win (Medium may "gift" it once per game — a blunder),
+//   2. answer the opponent's one-move threat (forced block),
+//   3. expectimax search (native SearchCore) with the deny-bias and Easy's
+//      defensive bias folded into the scores, then a temperature-tempered pick
+//      from the top, plus the difficulty's deliberate-mistake budget.
+// Returns the chosen move + the scored list + predicted line for telemetry.
 NativeAIResult NativeAI::chooseMove(int player) {
   NativeAIResult result;
   const Difficulty cfg = difficulty();
@@ -335,6 +412,9 @@ NativeAIResult NativeAI::chooseMove(int player) {
   return result;
 }
 
+// Recommend the best move for `player` (the Hint button). Win → forced block →
+// prefill/re-infer rollout over every candidate, so it never suggests a move
+// that hands the AI an immediate attack when a safer one exists.
 int NativeAI::hint(int player) {
   const auto win = winningCells(cells_, player);
   if (!win.empty()) return win.front();
@@ -359,6 +439,10 @@ int NativeAI::hint(int player) {
   return best;
 }
 
+// Game over: tally the result (drives adaptive difficulty) and apply the
+// cross-game affinity reward/decay — the winner's played cells are boosted
+// 1.25×, the loser's decayed 0.5× (a draw changes nothing). Returns the
+// updated state for React to persist.
 NativeAIState NativeAI::endGame(int winnerSide) {
   if (winnerSide == 0) ++draws_;
   else if (winnerSide == humanSide_) ++wins_;
@@ -374,6 +458,8 @@ NativeAIState NativeAI::endGame(int winnerSide) {
   return state();
 }
 
+// Flatten the session's learning state (affinity triples, profile/perception
+// triples, stats, adaptive, aggression) for JS to persist via AsyncStorage.
 NativeAIState NativeAI::state() const {
   NativeAIState out;
   for (const auto& [side, row] : affinity_) for (const auto& [cell, value] : row) {
@@ -387,6 +473,9 @@ NativeAIState NativeAI::state() const {
   return out;
 }
 
+// "What the model knows about you" telemetry for the internal debug panel:
+// current win-probs (human + AI), the model's best move, and every empty cell
+// ranked by affinity-blended model score (softmax probabilities).
 NativeAIKnowledge NativeAI::knowledge(int humanSide) const {
   NativeAIKnowledge out;
   const NativeAIState base = state();

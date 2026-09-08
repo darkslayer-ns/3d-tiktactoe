@@ -67,6 +67,7 @@ add_library(tfm_engine STATIC
   "${TFM_REPO_ROOT}/cpp/src/weights.cpp"
   "${TFM_REPO_ROOT}/cpp/src/search.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/cpp/NativeAI.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/cpp/TfmEngineState.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/cpp/TfmEngine.cpp"
 )
 
@@ -96,9 +97,11 @@ if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
 endif()
 set_target_properties(tfm_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# TfmEngine.cpp pulls in RN bridging headers that need C++20.
+# TfmEngine.cpp / TfmEngineState.cpp pull in RN bridging headers (jsi) that
+# need C++20.
 set_source_files_properties(
   "${CMAKE_CURRENT_SOURCE_DIR}/cpp/TfmEngine.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/cpp/TfmEngineState.cpp"
   PROPERTIES COMPILE_OPTIONS "-std=c++20"
 )
 

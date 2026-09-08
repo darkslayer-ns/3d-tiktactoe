@@ -23,14 +23,22 @@ entirely in the app binary:
   - `TfmEngineTurboModule` (C++ TurboModule) whose `installJSIBindingsWithRuntime`
     installs that global. The JS side requests it through
     `globalThis.__turboModuleProxy('TfmEngine')` (see `src/native/TfmEngine.ts`).
+- `cpp/TfmEngineState.{h,cpp}` — shared `EngineState` (model + AI session
+  holder), the one-time weight load (`ensureLoaded`), and the JSI ⇄ C++ array /
+  result conversion helpers used by the host functions.
+- `cpp/TfmEnginePlatform.h` — the only platform-specific code in this module:
+  background-search thread priority (`pthread QoS` on Apple, `setpriority` on
+  Android). The numerical kernels are platform-selected in the shared engine
+  core (`cpp/src/ops.cpp`: Apple **Accelerate** vs Android **Eigen** +
+  `armv8-a+dotprod`), driven by the build configs below.
 - `cpp/NativeAI.{h,cpp}` — the **native AI session**: owns the board state,
   the expectimax search, forced win/block checks, difficulty/blunders,
   temperature sampling, the opponent-affinity memory, the player
   aggression/perception profiles, adaptive stats, the hint rollout, and the
   model-knowledge telemetry (`aiKnowledge`). This is the production runtime —
   the old `src/ai` TypeScript modules are kept only as reference/parity tests.
-- `TfmEngine.podspec` — iOS: compiles `../cpp/src/*.cpp` + `cpp/TfmEngine.cpp`
-  + `cpp/NativeAI.cpp` into the app.
+- `TfmEngine.podspec` — iOS: compiles `../cpp/src/*.cpp` + `cpp/*.cpp` into
+  the app (rerun `pod install` after adding a new `.cpp`).
 - `CMakeLists.txt` — Android: same sources as a static library `tfm_engine`,
   linked into `libappmodules.so`.
 

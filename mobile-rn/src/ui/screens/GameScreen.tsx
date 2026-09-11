@@ -111,6 +111,7 @@ export function GameScreen() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const configRef = useRef<GameConfig>(config)
   const appStateRef = useRef<AppStateStatus>(AppState.currentState)
+  const currentPlayerRef = useRef<Cell>(P1)
   const aiEpochRef = useRef(0)
   const inferenceInFlightRef = useRef(false)
   const resumeAiRef = useRef(false)
@@ -160,6 +161,12 @@ export function GameScreen() {
     [],
   )
 
+  // Mirror the turn into a ref so async AI paths can check it without
+  // closing over stale React state.
+  useEffect(() => {
+    currentPlayerRef.current = snap.currentPlayer
+  }, [snap.currentPlayer])
+
   // Let the winning line flash for ~1.6s, THEN reveal the result overlay.
   useEffect(() => {
     if (snap.over && !snap.demo) {
@@ -199,13 +206,18 @@ export function GameScreen() {
     }
     if (!boardRef.current || !engineRef.current) return
     if (overRef.current || thinkingRef.current) return
+    // Turn guard: never move while it's the human's turn (stale resume/timer).
+    if (!demoRef.current && currentPlayerRef.current === humanSideRef.current) return
     const epoch = aiEpochRef.current
     const aiSide: Cell = humanSideRef.current === P1 ? P2 : P1
     thinkingRef.current = true
     // Flash starts immediately (the cube breathes) — the human's mark already
     // rendered, and the inference runs in the background below.
     setSnap((prev) => (prev.thinking ? prev : { ...prev, thinking: true }))
-    if (timerRef.current) clearTimeout(timerRef.current)
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
     const startedAt = Date.now()
     const board = boardRef.current
     if (!board) return
@@ -290,7 +302,10 @@ export function GameScreen() {
     if (overRef.current || !demoRef.current) return
     const side = turnRef.current
     const epoch = aiEpochRef.current
-    if (timerRef.current) clearTimeout(timerRef.current)
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
     timerRef.current = setTimeout(async () => {
       try {
         if (appStateRef.current !== 'active' || epoch !== aiEpochRef.current) {
@@ -451,6 +466,7 @@ export function GameScreen() {
       thinkingRef.current = false
       demoRef.current = false
       movesRef.current = []
+      currentPlayerRef.current = P1 // X always opens
       setConfig(cfg)
       setEngineError(null)
       setPending(null)
@@ -548,8 +564,12 @@ export function GameScreen() {
     // Render the user's mark first, THEN start the AI inference — on larger
     // boards the render (instanced frame loop + pop-in) is the slow part, and
     // the placed mark should visibly land before the cube starts "thinking".
-    if (timerRef.current) clearTimeout(timerRef.current)
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
     timerRef.current = setTimeout(() => {
+      timerRef.current = null
       runAITurn()
     }, 180)
   }, [pending, snap.currentPlayer, runAITurn, endGame])
@@ -581,7 +601,10 @@ export function GameScreen() {
     movesRef.current = hist.slice(0, lastHuman)
     aiSetBoard(board.cells)
     setNativeSnapshot(aiKnowledge(human))
-    if (timerRef.current) clearTimeout(timerRef.current)
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
     overRef.current = false
     thinkingRef.current = false
     setPending(null)
@@ -710,14 +733,26 @@ const showHowTo = useCallback(
       {!snap.demo && !menuVisible && (
         <View style={[styles.bottomBar, { paddingBottom: insets.bottom }]}>
           <View style={styles.bottomActions}>
-            {!snap.over && snap.currentPlayer === config.humanSide && (
-              <Pressable onPress={onHint} style={[styles.iconBtn, styles.iconBtnHint]} hitSlop={8} testID="hint-btn">
-                <Text style={styles.iconBtnHintText}>Hint</Text>
+            {!snap.over && (
+              <Pressable
+                onPress={onHint}
+                disabled={!isHumanTurn}
+                style={[styles.iconBtn, styles.iconBtnHint, !isHumanTurn && styles.iconBtnDisabled]}
+                hitSlop={8}
+                testID="hint-btn"
+              >
+                <Text style={[styles.iconBtnHintText, !isHumanTurn && styles.iconBtnTextDisabled]}>Hint</Text>
               </Pressable>
             )}
-            {!snap.thinking && snap.movesPlayed.length > 0 && (
-              <Pressable onPress={onUndo} style={styles.iconBtn} hitSlop={8} testID="undo-btn">
-                <Text style={styles.iconBtnText}>Undo</Text>
+            {snap.movesPlayed.length > 0 && (
+              <Pressable
+                onPress={onUndo}
+                disabled={snap.thinking}
+                style={[styles.iconBtn, snap.thinking && styles.iconBtnDisabled]}
+                hitSlop={8}
+                testID="undo-btn"
+              >
+                <Text style={[styles.iconBtnText, snap.thinking && styles.iconBtnTextDisabled]}>Undo</Text>
               </Pressable>
             )}
             <Pressable onPress={openMenu} style={styles.iconBtn} hitSlop={8} testID="new-game-btn">
@@ -862,6 +897,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1,
     textTransform: 'uppercase',
+  },
+  iconBtnDisabled: {
+    opacity: 0.45,
+  },
+  iconBtnTextDisabled: {
+    color: Theme.muted,
   },
   debugBtn: {
     width: 34,

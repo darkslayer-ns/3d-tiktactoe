@@ -24,7 +24,7 @@ export function GameOverOverlay({ winner, humanSide, onPlayAgain, onMenu }: Game
   const glow = useRef(new Animated.Value(0)).current
 
   useEffect(() => {
-    Animated.timing(enter, { toValue: 1, duration: 420, useNativeDriver: true }).start()
+    Animated.spring(enter, { toValue: 1, damping: 18, stiffness: 200, useNativeDriver: true }).start()
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(glow, { toValue: 1, duration: 850, useNativeDriver: true }),
@@ -73,12 +73,17 @@ export function GameOverOverlay({ winner, humanSide, onPlayAgain, onMenu }: Game
         >
           {title}
         </Animated.Text>
-        <Pressable onPress={onPlayAgain} style={[styles.playBtn, { borderColor: accent }]}>
-          <Animated.Text style={[styles.playText, { color: accent, opacity: glowOpacity }]}>
-            PLAY AGAIN
-          </Animated.Text>
+        <Pressable
+          onPress={onPlayAgain}
+          style={({ pressed }) => [
+            styles.playBtn,
+            { backgroundColor: accent, shadowColor: accent },
+            pressed && styles.playBtnPressed,
+          ]}
+        >
+          <Text style={styles.playText}>PLAY AGAIN</Text>
         </Pressable>
-        <Pressable onPress={onMenu} style={styles.menuLink}>
+        <Pressable onPress={onMenu} style={({ pressed }) => [styles.menuLink, pressed && { opacity: 0.6 }]}>
           <Text style={styles.menuText}>MENU</Text>
         </Pressable>
       </Animated.View>
@@ -137,12 +142,20 @@ const styles = StyleSheet.create({
     paddingVertical: spacing(3.5),
     paddingHorizontal: spacing(12),
     borderRadius: radius(6),
-    borderWidth: 2,
     alignItems: 'center',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.55,
+    shadowRadius: 18,
+    elevation: 10,
+  },
+  playBtnPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.97 }],
   },
   playText: {
+    color: Theme.bg,
     fontSize: fontSize(15),
-    fontWeight: '800',
+    fontWeight: '900',
     letterSpacing: 2,
   },
   menuLink: {
